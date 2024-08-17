@@ -6,6 +6,6 @@ DEA: Scripts for differential expression analysis.
 
 LDSC-SEG: Scripts to reproduce the LDSC-SEG analysis. This analysis helps identify the cell types enriched for genetic associations.
 
-<! -- SNPsea: Scripts to reproduce the SNPsea analysis.  -- !> 
+<! -- SNPsea: Scripts to reproduce the SNPsea analysis.  --> 
 
 scDRS: Scripts to reproduce single-cell RNAseq and scDRS analyses.
