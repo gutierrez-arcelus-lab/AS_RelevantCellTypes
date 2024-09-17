@@ -1,0 +1,6 @@
+mkdir: cannot create directory ‘/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225’: File exists
+mkdir: cannot create directory ‘/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225’: File exists
+mkdir: cannot create directory ‘/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225’: File exists
+mkdir: cannot create directory ‘/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225’: File exists
+mkdir: cannot create directory ‘/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225’: File exists
+mkdir: cannot create directory ‘/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225’: File exists

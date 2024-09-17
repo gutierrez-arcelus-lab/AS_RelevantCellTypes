@@ -1,0 +1,27 @@
+Loading required package: lme4
+Loading required package: Matrix
+Loading required package: ggplot2
+Loading required package: gt
+Loading required package: dplyr
+
+Attaching package: ‘dplyr’
+
+The following objects are masked from ‘package:stats’:
+
+    filter, lag
+
+The following objects are masked from ‘package:base’:
+
+    intersect, setdiff, setequal, union
+
+Loading required package: optparse
+Loading required package: future
+Warning: future: Ignoring invalid number of processes specified in command-line option: -p /lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LMM_LDSC_seg/balanced_groups.csv
+Warning message:
+In parseCmdArgs() : NAs introduced by coercion
+Error in file(file, "rt") : cannot open the connection
+Calls: read.csv -> read.table -> file
+In addition: Warning message:
+In file(file, "rt") :
+  cannot open file '/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LMM_LDSC_seg/balanced_groups.csv': No such file or directory
+Execution halted

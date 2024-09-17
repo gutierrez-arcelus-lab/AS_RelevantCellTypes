@@ -1,0 +1,220 @@
+```{r LDSC_Seg function}
+library(data.table)
+library(tidyverse)
+library(fs)
+if(!dir.exists(fs::path("commands_ldsc"))){dir.create(fs::path("commands_ldsc"))}
+
+
+ldsc_seg<-function(h2cts,ref_ld_chr,ref_ld_chr_cts,out,w_ld_chr){
+  commands<-expand_grid("python /lab-share/IM-Gutierrez-e2/Public/Dany/ldsc/ldsc.py --h2-cts",h2cts, "\\\n",
+              "--out",out,  "\\\n",
+              "--ref-ld-chr",ref_ld_chr ,  "\\\n",
+              "--ref-ld-chr-cts",ref_ld_chr_cts, "\\\n",
+              "--w-ld-chr",w_ld_chr, "\n",)
+  
+  x<-sapply(commands$h2cts%>%str_split("/"),function(x){
+  tail(x,n = 1)%>%str_remove("\\.sumstat.+")
+    })
+  y<-sapply(commands$ref_ld_chr%>%str_split("/"),function(x){
+  tail(x,n = 2)%>%head(n=1)
+    })
+  z<-sapply(commands$w_ld_chr%>%str_split("/"), function(x){
+  tail(x,n = 2)%>%head(n=1)
+    })
+  
+  cts<-sapply(commands$ref_ld_chr_cts%>%str_split("/"),function(x){
+  tail(x,n = 1)%>%str_remove("\\.+")
+    })
+  cts<-cts%>%str_replace_all("-","_")
+  dir_out<-fs::path(out,paste0(x,"-",y,"-",z,"-",cts))
+  commands$out<-dir_out
+  commands<-apply(commands, 1, function(x){
+  paste(x,collapse = " ")
+  })
+
+  commands
+}
+
+sldsc<-function(sumstats,l,ref_ld_chr_cts,out,w_ld_chr){
+  commands<-expand_grid("/lab-share/IM-Gutierrez-e2/Public/Dany/PYTHON-BASH_SCRIPTS/S-LDSC.sh -s",h2cts, "\\\n",
+              "--out",out,  "\\\n",
+              "--ref-ld-chr",ref_ld_chr ,  "\\\n",
+              "--ref-ld-chr-cts",ref_ld_chr_cts, "\\\n",
+              "--w-ld-chr",w_ld_chr, "\n",)
+  
+  x<-sapply(commands$h2cts%>%str_split("/"),function(x){
+  tail(x,n = 1)%>%str_remove("\\.sumstat.+")
+    })
+  y<-sapply(commands$ref_ld_chr%>%str_split("/"),function(x){
+  tail(x,n = 2)%>%head(n=1)
+    })
+  z<-sapply(commands$w_ld_chr%>%str_split("/"), function(x){
+  tail(x,n = 2)%>%head(n=1)
+    })
+  
+  cts<-sapply(commands$ref_ld_chr_cts%>%str_split("/"),function(x){
+  tail(x,n = 1)%>%str_remove("\\.+")
+    })
+  cts<-cts%>%str_replace_all("-","_")
+  dir_out<-fs::path(out,paste0(x,"-",y,"-",z,"-",cts))
+  commands$out<-dir_out
+  commands<-apply(commands, 1, function(x){
+  paste(x,collapse = " ")
+  })
+
+  commands
+}
+
+
+
+```
+
+
+
+
+
+```{r  preprocessing function}
+
+processing<-function(files_to_bed_extend,dir,out, script_name="ldsc_preprocess_commands_NKvsCD8.sh",name_ldcts){
+add<-paste("#!/bin/bash
+#SBATCH --job-name=ldsc_preprocess
+#SBATCH --output=out_ldsc_preprocess.txt
+#SBATCH --error=err_ldsc_preprocess.txt
+#SBATCH --partition=bch-compute
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=Marcos.ChinasHernandez@childrens.harvard.edu
+#SBATCH --time=01:00:00
+#SBATCH --mem=20G
+#SBATCH --ntasks=4 
+
+source /programs/biogrids.shrc
+module load anaconda2
+
+")
+w=225
+commands<-c(paste0("cd ",dir),
+paste0("sh /lab-share/IM-Gutierrez-e2/Public/Dany/PYTHON-BASH_SCRIPTS/window-LD2.sh",
+" -i ", dir,"/",files_to_bed_extend, " -w ", w),
+create_ldcts(files_to_bed_extend, name_ldcts=name_ldcts)
+)
+
+shfile<-paste0("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/", script_name)
+write(c(add,commands),file =shfile)
+}
+
+create_ldcts<-function(files_to_bed_extend,name_ldcts ="NKandCD8.ldcts",w = "225", control_annot="/lab-share/IM-Gutierrez-e2/Public/References/LDSC-Calderon/Control_w225/Control_w225."){
+name<-files_to_bed_extend%>%basename()%>%str_remove(".bed")
+c(paste0("echo ", name[1]," ",dir,"/225/",name[1],"_",w,"w.,",control_annot," > ", fs::path(dir,name_ldcts)),
+paste0("echo ", name[-1]," ",dir,"/225/",name[-1],"_",w,"w.,",control_annot," >> ", fs::path(dir,name_ldcts))
+)
+}
+
+
+```
+
+
+```{r balanced_groups tstat}
+library(data.table)
+library(tidyverse)
+library(fs)
+files<-"/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LMM_LDSC_seg/balanced_groups"
+dir_project<- fs::path("01_LDSC-SEG", "LDSC_seg/",project_name)
+
+project_name<-"balanced_groups_tstat"
+dir_project<- fs::path("LDSC_seg/",project_name)
+dir_create(dir_project)
+#x<-files[1]
+mixedmodel<-lapply( files, function(x){
+  data<-fread(fs::path(x))
+  name=basename(x)%>%str_remove(".txt")
+  
+  data %>% dplyr::arrange(desc(x1_t)) %>%
+  dplyr::slice_max(order_by = x1_t, prop = 0.1)%>%
+  dplyr::filter(x1 >0)%>%
+  mutate(chr = V1%>%str_split_i("_",1),  init = V1%>%str_split_i("_",2), end =  V1%>%
+  str_split_i("_",3))%>%dplyr::select(chr  ,init ,end ) %>%
+  write_tsv(file = fs::path(dir_project,paste0(name ,".bed")),col_names= FALSE)
+
+})
+
+
+files_to_bed_extend<-dir_ls(dir_project, regexp = "mixedmodel.bed")%>%basename()
+
+dir <-fs::path("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/", dir_project)
+out<-fs::path("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/", dir_project)
+
+script_n<- paste0("ldsc_preprocess_commands_",project_name,".sh")
+cts_name<-paste0(project_name,".ldcts")
+
+processing(files_to_bed_extend,dir, out , script_name = script_n,name_ldcts =paste0(project_name,".ldcts"))
+library(fs)
+library(dplyr)
+
+files<-fs::dir_ls("/lab-share/IM-Gutierrez-e2/Public/References/LDSC-running-files/SUMSTATS/",recurse = TRUE,type = "file",regexp = "PASS_.*.sumstats")%>%stringr::str_subset("Ankylosis", negate = TRUE)
+baseline<-c("/lab-share/IM-Gutierrez-e2/Public/References/LDSC-running-files/BASELINES/baseline_v1.2/baseline.")
+dir_out<-fs::path("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/",dir_project, "/ldsc_seg_analysis/")
+dir_create(dir_out)
+cts_file <-fs::path("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/",dir_project ,cts_name)
+wldchr <-c("/lab-share/IM-Gutierrez-e2/Public/References/LDSC-running-files/weights_hm3_no_hla/weights.")
+commands<-ldsc_seg(h2cts=files,ref_ld_chr= baseline, ref_ld_chr_cts=cts_file, w_ld_chr = wldchr,out=dir_out)
+write(commands,file = fs::path("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/", dir_project, paste0("ldsc_commands_", project_name,".sh") ) )
+
+
+```
+
+
+```{r balanced_groups tstat stim correction}
+library(data.table)
+library(tidyverse)
+library(fs)
+files<-"/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LMM_LDSC_seg/balanced_groups_correctionbystim"
+files<-fs::dir_ls(files ,  regexp= "_mixedmodel.txt")
+
+project_name<-"balanced_groups_tstat_correctionbystim"
+dir_project<- fs::path("01_LDSC-SEG", "LDSC_seg/",project_name)
+dir_create(dir_project)
+#x<-files[1]
+mixedmodel<-lapply( files, function(x){
+  data<-fread(fs::path(x))
+  name=basename(x)%>%str_remove(".txt")
+  
+  data %>% dplyr::arrange(desc(x1_t)) %>%
+  dplyr::slice_max(order_by = x1_t, prop = 0.1)%>%
+  dplyr::filter(x1 >0)%>%
+  mutate(chr = V1%>%str_split_i("_",1),  init = V1%>%str_split_i("_",2), end =  V1%>%
+  str_split_i("_",3))%>%dplyr::select(chr  ,init ,end ) %>%
+  write_tsv(file = fs::path(dir_project,paste0(name ,".bed")),col_names= FALSE)
+
+})
+
+
+files_to_bed_extend<-dir_ls(dir_project, regexp = "mixedmodel.bed")%>%basename()
+
+dir <-fs::path("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/", dir_project)
+out<-fs::path("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/", dir_project)
+
+script_n<- paste0("ldsc_preprocess_commands_",project_name,".sh")
+cts_name<-paste0(project_name,".ldcts")
+
+processing(files_to_bed_extend,dir, out , script_name = script_n,name_ldcts =paste0(project_name,".ldcts"))
+library(fs)
+library(dplyr)
+
+files<-fs::dir_ls("/lab-share/IM-Gutierrez-e2/Public/References/LDSC-running-files/SUMSTATS/",recurse = TRUE,type = "file",regexp = "PASS_.*.sumstats")%>%stringr::str_subset("Ankylosis", negate = TRUE)
+baseline<-c("/lab-share/IM-Gutierrez-e2/Public/References/LDSC-running-files/BASELINES/baseline_v1.2/baseline.")
+dir_out<-fs::path("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/",dir_project, "/ldsc_seg_analysis/")
+dir_create(dir_out)
+cts_file <-fs::path("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/",dir_project ,cts_name)
+wldchr <-c("/lab-share/IM-Gutierrez-e2/Public/References/LDSC-running-files/weights_hm3_no_hla/weights.")
+commands<-ldsc_seg(h2cts=files,ref_ld_chr= baseline, ref_ld_chr_cts=cts_file, w_ld_chr = wldchr,out=dir_out)
+write(commands,file = fs::path("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/", dir_project, paste0("ldsc_commands_", project_name,".sh") ) )
+
+
+```
+
+
+
+
+
+
+

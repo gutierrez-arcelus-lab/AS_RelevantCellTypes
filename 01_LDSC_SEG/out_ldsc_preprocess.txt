@@ -1,0 +1,35 @@
+BCells_mixedmodel.bed
+Adding 225 window to BCells_mixedmodel.bed
+/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225/BCells_mixedmodel_225w.bed
+BCells_mixedmodel-LD
+Submitted batch job 2544345
+DC1_mixedmodel.bed
+Adding 225 window to DC1_mixedmodel.bed
+/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225/DC1_mixedmodel_225w.bed
+DC1_mixedmodel-LD
+Submitted batch job 2544367
+DC2_mixedmodel.bed
+Adding 225 window to DC2_mixedmodel.bed
+/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225/DC2_mixedmodel_225w.bed
+DC2_mixedmodel-LD
+Submitted batch job 2544368
+Monocytes_mixedmodel.bed
+Adding 225 window to Monocytes_mixedmodel.bed
+/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225/Monocytes_mixedmodel_225w.bed
+Monocytes_mixedmodel-LD
+Submitted batch job 2544369
+NKs_mixedmodel.bed
+Adding 225 window to NKs_mixedmodel.bed
+/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225/NKs_mixedmodel_225w.bed
+NKs_mixedmodel-LD
+Submitted batch job 2544370
+Plasma_mixedmodel.bed
+Adding 225 window to Plasma_mixedmodel.bed
+/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225/Plasma_mixedmodel_225w.bed
+Plasma_mixedmodel-LD
+Submitted batch job 2544371
+TCells_mixedmodel.bed
+Adding 225 window to TCells_mixedmodel.bed
+/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/01_LDSC-SEG/LDSC_seg/balanced_groups_tstat_correctionbystim/225/TCells_mixedmodel_225w.bed
+TCells_mixedmodel-LD
+Submitted batch job 2544372
