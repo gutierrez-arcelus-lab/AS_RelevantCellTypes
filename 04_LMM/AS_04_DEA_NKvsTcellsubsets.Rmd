@@ -1,0 +1,1607 @@
+---
+title: "AS"
+output: html_document
+---
+
+https://academic.oup.com/jamia/article/29/4/643/6445134#340484837
+
+```{r Packages and function}
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(qvalue)
+library(gplots)
+library(ggplot2)
+library(patchwork)
+library(data.table)
+library(tidyverse)
+#devtools::install_github("davidgohel/flextable")
+#devtools::install_github("davidgohel/gdtools")
+library(flextable)
+
+dir<-"02_SNPsea_GSE124731"
+load("02_SNPsea_GSE124731/ITC_rnaseq_qc_norm_coreCellT.rda")
+match <- read.table(file = fs::path(dir, "gene_ID_name_match_gencodeV24.txt"), header = T, stringsAsFactors = F )
+ids <- sapply(match$GENE_ID, function(gene){
+  strsplit(gene, "\\.")[[1]][1]
+})
+rownames(match) <- ids
+
+AS_risk<-data.table::fread(fs::path(dir, "AS_geneticrisk.tsv"))
+AS_risk$Gene[AS_risk$Gene=="CCL2/7/8/11"]<- "CCL2/CCL7/CCL8/CCL11"
+AS_risk<-AS_risk %>% 
+    mutate(Gene = strsplit(as.character(Gene), "/")) %>% 
+    unnest(Gene)
+
+genes<-data.table::fread(fs::path(dir, "AS_geneticrisk.tsv"))%>%pull(Gene)%>%unique()
+genes[genes=="TLR4"]
+genes[genes=="CCL2/7/8/11"]<- "CCL2/CCL7/CCL8/CCL11"
+genes<-genes%>%str_split("/")%>%unlist()
+length(unique(genes))
+match$GENE_NAME[match$GENE_NAME %in% c("LSM14A","IBFC5")]
+setdiff(genes,match$GENE_NAME[match$GENE_NAME %in% genes])
+geneID <- rownames(match)[which(match$GENE_NAME %in% genes)]
+
+args<-list()
+logcounts<-log2tpm[rownames(log2tpm)%in%geneID,]
+logcounts<-log2tpm
+
+log2tpm
+nrow(logcounts)
+args$oDir<-fs::path(dir, "pseudo_bulk_LMM")
+args$oFile<-"NK_vsNK_others_all"
+meta_matrix<-m
+meta_matrix<-meta_matrix%>%mutate(contrast=ifelse(cell_type=="NK",1,0))
+args$name<-"contrast"
+args$r<-"individual_id" 
+args$f<-NA 
+args$number<- 1
+args$sorting_column<-"Subject"
+
+filtered_genes <- log2tpm[rowSums(log2tpm > 2) >= 10, ]
+filtered_genes%>%nrow()
+log2tpm%>%nrow()
+```
+
+
+```{r data}
+genes_magma<-read.table(file = "scdrs_analysis/gs_file_gutcellatlas/AS_ImmunoChip.gs",header = TRUE)
+topgenes<-genes_magma$GENESET%>%str_split(",")%>%unlist()%>%str_remove(":.+")%>%head(1000)
+magmatopgenes<-data.frame(Gene = topgenes)
+score<-genes_magma$GENESET%>%str_split(",")%>%unlist()%>%str_remove(".+:")
+magma_df<-data.frame(GENE= topgenes,SCORE = score)%>%rownames_to_column("rank") 
+correlation<-read.table("scdrs_analysis/humancellgut_traits/scdrs_results/cov/Downstream/AS_ImmunoChip.scdrs_gene")
+genes_cor<- correlation%>%rownames_to_column(var = "ID")%>%pull(ID)%>%head(100)
+
+```
+```{r functions}
+
+# 	Packages
+require(lme4)
+require(dplyr)
+require(optparse)
+require(tidyverse)
+
+# 	Functions
+read_time<-function(name,file){
+    t0<-Sys.time()
+    temp<-read.table(file, sep = '\t', header = TRUE, row.names=1)
+    tf<-Sys.time()-t0
+    banner<-paste(file, "...stored in: ",name,". Reading time: ", round(tf,3),"minutes.", sep="")
+    print(banner)
+    assign(name,temp, envir=parent.frame())
+    rm(temp)   
+}
+
+selection_model<-function(name,covType,expressed,covF=NULL,covR=NULL){
+#Defining regression variables (predictor and covariates)
+	#Predictor variable
+	x<-as.factor(meta_matrix[,name])
+	#Notation for covariates with random effect
+	if(covType=="1" || covType=="0"){
+	covRandom <- paste(paste("(1|meta_matrix$",covR,")",sep=""),collapse=" + ")
+	}
+	if(covType=="1"){
+	covs <- paste(" ", covRandom, sep="")
+	}
+	#Notation for covariates with fixed effect
+	if(covType=="-1" || covType=="0"){
+    covs<- paste(paste("meta_matrix$", covF, sep=""), collapse=" + ")
+  	}
+
+  	#Using covariates with multiple effects
+  	if(covType=="0"){
+  	covs <- paste(covs, covRandom, sep=" + ")
+  	}
+
+
+#Perform test and control regression
+	#y<- expressed[1,]
+	#meta_matrix$Individual
+ 	results <- apply(expressed,1,function(y){
+ 		#Differential Model
+ 	  	form1 <- as.formula(paste("y ~ x +", covs))
+ 	  	#Control Model
+ 	  	form0 <- as.formula(paste("y ~", covs))
+ 	  	#print(form1)
+ 	  	if(covType=="-1"){
+ 	  		lm1 <- lm(form1)
+ 			lm0 <- lm(form0)
+ 	  	}else{
+ 	  	lm1 <- lmer(form1, REML=FALSE)
+ 			lm0 <- lmer(form0, REML=FALSE)
+ 	  	}
+ 		#Perform likelihood ratio test using anova function
+ 		anv <- anova(lm0, lm1)
+ 		#Output Stats
+ 		c(summary(lm1)$coefficients[2,], anv$P[2])
+ 	})           
+ 	results <- t(results)
+ 	colnames(results)<-c("x1","Std","x1_t","p_value")
+
+	if(nrow(results)!=nrow(expressed)){
+	 		print("WARNING: Input and output lines differ!")
+	}
+
+return(results) 	
+}
+
+annotate_table<-function(de,counts,logfc_val=1,Name="x",org="mouse",outdir=""){
+  library(AnnotationDbi)
+  library(org.Hs.eg.db)
+  library("EnhancedVolcano")
+  library(fs)
+  library(tidyverse)
+  library(org.Mm.eg.db)
+  library(dplyr)
+logFC<-c("Beta","log2FoldChange")
+pval<-c("Pvalue","pvalue")
+print(paste(Name,nrow(de)))
+xname<-as.data.frame(de)%>%dplyr::select(any_of(logFC))%>%colnames()
+padj_cutoff<-0.05/nrow(de)
+
+all<-as.data.frame(de)%>%tibble::rownames_to_column(var="ENSEMBL")%>%dplyr::mutate(ENSEMBL=sub("\\..+","",ENSEMBL))%>%
+  dplyr::select("ENSEMBL",log2FoldChange=any_of(logFC),pvalue=any_of(pval))
+
+cols <- c("ENSEMBL","SYMBOL", "GENENAME", "ENTREZID")
+
+if(org=="human"){
+Maptable<-AnnotationDbi::select(x=org.Hs.eg.db, keys=as.character(all$ENSEMBL), columns=cols, keytype="ENSEMBL",multiVals="first")
+Maptable<-Maptable%>%group_by(ENSEMBL)%>%distinct(ENSEMBL,.keep_all = TRUE)
+}
+
+if(org=="mouse"){
+Maptable<-AnnotationDbi::select(x=org.Mm.eg.db, keys=as.character(all$ENSEMBL), columns=cols, keytype="ENSEMBL",multiVals="first")
+#Maptable%>%filter(ENSEMBL=="ENSMUSG00000074417")
+Maptable<-Maptable%>%group_by(ENSEMBL)%>%distinct(ENSEMBL,.keep_all = TRUE)
+#Maptable%>%filter(ENSEMBL=="ENSMUSG00000074417")
+}
+paste0("Number of unique entrez ids: ",length(intersect(Maptable$ENTREZID,Maptable$ENTREZID)))
+
+de<-merge(x=all,y=Maptable)#%>%dplyr::filter(!is.na("SYMBOL"))
+
+counts<-counts%>%rownames_to_column(var = "ENSEMBL")%>% dplyr::mutate(ENSEMBL=sub("\\..+","",ENSEMBL))
+#print(nrow(de))
+de<-merge(de,counts)
+#print(nrow(de))
+names(de)[names(de)=="log2FoldChange"]<-xname
+
+
+library(qvalue)
+qval<-qvalue(de$pvalue,pi0.method = "smoother")
+de$FDR<-qval$qvalues
+
+de$FDR05<-"0"
+de$FDR10<-"0"
+
+de$FDR05[de$FDR <= 0.05] <- "1"
+de$FDR10[de$FDR <= 0.1] <- "1"
+
+write.table(de,file = fs::path(outdir,paste0("Table_annotated_",Name,".txt")))
+print(paste(Name,nrow(de)))
+return(de)
+}
+
+```
+
+```{r analysis NK vs T cells}
+if(args$simulation){
+	print("Running simulation MODE")
+}
+
+fixed<-NULL
+random<-NULL
+covars<-0
+if(is.character(args$r)){
+	covars<-covars+1
+	random<-args$r
+}
+
+if(is.character(args$f)){
+	covars<-covars-1
+	if(grepl(",",args$f)){
+		fixed<-str_split(args$f,",",simplify=T)
+		#print(paste(paste("meta_matrix$", fixed, sep=""), collapse=" + "))
+	}else{
+		fixed<-args$f
+	}
+}
+
+
+#Subseting Counts Matrix
+if(!is.null(args$columns)){
+  print(paste("Subsetting columns from",args$columns,sep=" "))
+  selected_columns<-read.table(args$columns)
+  logcounts <- logcounts %>% select(selected_columns$V1)
+  #meta_matrix<-meta_matrix[which(meta_matrix$sorting_column %in% selected_columns$V1),]
+}
+
+#Sorting Metamatrix
+
+if(ncol(logcounts)!=sum(colnames(logcounts) %in% meta_matrix[,args$sorting_column])){
+	print("ERROR: Counts column names don't match the meta_matrix.")
+	print("Levels in sorting_column:\n")
+	print(meta_matrix[,args$sorting_column])
+	print("Columns in counts:")
+	print(colnames(logcounts))
+	stop()
+}else{
+	row.names(meta_matrix)<-meta_matrix[,args$sorting_column]
+	meta_matrix<-meta_matrix[colnames(logcounts),]
+	#print(meta_matrix)
+}
+
+
+#Defining Output Path
+output_path<-args$oDir
+if(!dir.exists(output_path)){
+ dir.create(output_path)
+ print(paste("Created output directory:",output_path,sep=""))
+}
+
+if(isTRUE(args$a)){
+	log_filtered<-logcounts
+	print(paste0("Testing all instances in the counts matrix ",nrow(log_filtered)))
+}else{
+
+	minimum<-as.integer(args$number)
+	print(paste0("Filtering instances with a value greater than 1 in at least ",minimum," columns..."))
+	log_filtered<- logcounts[which(rowSums(logcounts>1)>=minimum),]
+	print(paste0("Testing ",nrow(log_filtered)," rows."))
+	
+}
+
+
+library(edgeR)
+class(logcounts)
+class(random) #
+class(fixed) #NULL
+class(covars) #numeric 
+suppressMessages({
+    model_results<-selection_model(name=args$name,expressed=logcounts,covR=random,covF=fixed,covType=as.character(covars))
+})
+
+model_results<-model_results%>%as.data.frame()%>%rownames_to_column("gene")%>%arrange(p_value)
+library(qvalue)
+pvalname<-paste0("p_value")
+fdrname <-paste0("fdr")
+fdr<-qvalue(p=model_results[[pvalname]])
+model_results$fdr<-fdr$qvalues
+#Writing output file
+filename_regression<-paste(output_path,"/",args$oFile,"_mixedmodel_filtered.txt", sep="")
+print(filename_regression)
+head(match)
+merged<-merge(model_results,match%>%rownames_to_column("gene"), by="gene")
+write.table(merged, filename_regression, row.names=F,col.names=T,quote=F, sep = "\t")
+print("Done!")
+model_results%>%head
+Results_lmm<-model_results
+qqx<-c()
+qqx[1]<-min(Results_lmm$x1)-1 
+qqx[2]<-max(Results_lmm$x1)+1 
+qqy<- (-log10(Results_lmm$p_value))
+qqy<-c(0,  qqy[1]+0.5)
+subname<-"NK healthy vs axi"
+
+```
+
+
+```{R visualization NK versus T cells magma genes}
+library(tidyverse)
+NK_dir<-"GSE133383_NKsDimBright"
+filename_regression<-paste0(args$oDir,"/",args$oFile,"_mixedmodel_filtered.txt")
+model_results<- fread(filename_regression)
+model_results%>%filter(fdr<=0.05) %>% filter(GENE_NAME %in% genes )
+fwrite( model_results%>%filter(fdr<=0.05)%>%arrange(fdr)%>%dplyr::select(-gene, -GENE_TYPE)%>%dplyr::select(GENE_ID,GENE_NAME,everything()),paste0(args$oDir,"/",args$oFile,"supplementary_NKvsTcells.tsv"),sep="\t")
+fwrite( model_results%>%filter(fdr<=0.05,x1>0)%>%arrange(fdr)%>%dplyr::select(-gene, -GENE_TYPE)%>%dplyr::select(GENE_ID,GENE_NAME,everything()),paste0(args$oDir,"/",args$oFile,"supplementary_NKvsTcells_Upregulated.tsv"),sep="\t")
+
+genes_pos<- model_results%>%arrange(fdr)%>%pull(gene)
+
+colnames(logcounts)<-colnames(logcounts)
+model_results_f<-model_results%>%filter(fdr<=0.05,x1>0) 
+
+merged<- merge(model_results_f, magmatopgenes, by.x = "GENE_NAME", by.y ="Gene")#%>%mutate(beta = log(OR))%>% arrange(desc(abs(beta)* -log10(fdr) *x1 )) 
+
+logcountsm<-logcounts%>%rownames_to_column("ID")%>%
+pivot_longer(., -(ID), names_to = "sample_id", values_to = "exp") %>%
+mutate(sample_id = sample_id%>%str_split_i("_",1))%>%dplyr::group_by(ID,sample_id)%>% 
+summarise(avg = mean(exp, na.rm=T)) %>%ungroup()%>% spread(sample_id, avg)%>%as.data.frame()
+
+
+#geneID <- match$GENE_NAME[which(rownames(match) %in% logcountsm$ID)]
+logcountsm<-merge(merged%>%select(gene,GENE_NAME),logcountsm,by.x=c("gene"),by.y = c("ID"))%>%dplyr::select(-gene)%>%filter(!duplicated(GENE_NAME))%>%column_to_rownames("GENE_NAME")
+nrow(logcountsm)
+fa_col <- c("CD8" =  "#D7A4EA", "CD4"= "#D7A4EA" , "MAIT" =  "#D7A4EA", "Vd1" =  "#D7A4EA", "Vd2" =  "#D7A4EA","NKT"=  "#D7A4EA","NK"= "#F79540")
+
+library(ComplexHeatmap)
+groups<-colnames(logcountsm)%>%str_remove("_.+")
+png("AS_paper/complex_heatmap_magma.png", width = 4, height = 8, units = 'in',res=300)
+Heatmap(as.matrix(logcountsm)  )
+dev.off()
+# bottom_annotation = HeatmapAnnotation(celltypes = groups,col = list(celltypes = fa_col)
+mat_scaled = t(scale(t(logcountsm)))
+mat_scaled <-t( apply(logcountsm, MARGIN = 1, FUN = scale ))
+colnames(mat_scaled)<-groups
+nrow(mat_scaled)
+library(ComplexHeatmap)
+#groups<-colnames(logcountsm)%>%str_remove("_.+")
+#mames = c( expression("NK"), expression("iNKT"), expression("CD4"^"+"*"T"), 
+#  expression("V"*delta*"1"), expression("CD8"^"+"*"T"), expression("V"*delta*"2"), 
+#                         expression("MAIT"))
+colnames(mat_scaled)                       
+#colnames(mat_scaled)<-names
+mytitle<- "Differential Expressed Genes \n Associated with AS Risk SNPs \n  in NK Cells Compared to Six T Cell Subsets"
+names= structure( c( expression("CD4"^"+"*"T"),expression("CD8"^"+"*"T"),  expression("MAIT"),expression("NK"), expression("iNKT"),  
+  expression("V"*delta*"1"),  expression("V"*delta*"2")), names =c( "CD4" , "CD8"  ,"MAIT", "NK" ,  "NKT"  ,"Vd1" , "Vd2" ))
+png("AS_paper/complex_heatmap_scaled_magma.png", width = 6, height = 12, units = 'in',res=300)
+Heatmap(as.matrix(mat_scaled) ,column_labels=names,name = "z-score"  ,
+column_names_rot = 45, row_names_side = "left",  row_dend_side = "right",column_title = mytitle,row_names_gp = grid::gpar(fontsize = 3))
+dev.off()
+
+column_names_rot = 45, row_names_side = "left",
+mytitle<- "Differential Expressed Genes Associated with AS Risk SNPs \n  in NK Cells Compared to Six T Cell Subsets"
+
+png("AS_paper/complex_heatmap_scaled_t_magma.png", width = 12, height = 3.5, units = 'in',res=300)
+Heatmap(as.matrix(t(mat_scaled)) ,row_labels=names ,name = "z-score" ,
+column_names_rot = 45, row_names_side = "left",  row_dend_side = "right", column_title = mytitle,column_names_gp = grid::gpar(fontsize = 3))
+dev.off()
+
+
+GSE133383_normcounts<-fread(fs::path(NK_dir,"GSE133383_filtered_NKnormalized_counts.csv.gz"))
+meta<-fread("GSE133383_meta.txt")%>%dplyr::select(source_name,`Sample Name`,Tissue, subset, Individual , Cell_type)
+meta<- meta%>%mutate(sourcename = ifelse(source_name =="Blood","BL" ,source_name))%>%
+  mutate(sourcename = ifelse(source_name =="BM","BM" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Spleen","SP" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Lung","LU" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="LN","LN" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Blood","BL" ,sourcename))%>%
+  mutate(subsets = ifelse(subset =="CD56brightCD16-","I" ,subset))%>%
+  mutate(subsets = ifelse(subset =="CD56dimCD16+","M" ,subsets))%>%
+  mutate(sampleid=paste0(Individual,"_",sourcename, "_",subsets))%>%
+  mutate(group=paste0(sourcename, "_",subsets))
+
+anno_df = data.frame(
+  foo = meta$sampleid,
+  bar =  meta$source_name
+)
+unique(meta$source_name)
+ha = HeatmapAnnotation(df = anno_df,
+                       col = list( bar = c("Blood"=1,"BM"=2  ,   "Spleen"=3, "Lung"=4,   "LN"=5 )
+                       )
+)
+
+#mygenes<-model_results%>%filter(fdr<=0.05)%>%pull(GENE_NAME)
+mygenes<-model_results%>%filter(fdr<=0.05, x1>0)%>%pull(GENE_NAME)
+title<-"Up"
+x<-GSE133383_normcounts%>%rename( Gene=V1)%>%filter(Gene%in%mygenes)%>%column_to_rownames("Gene")
+  Tissue<-meta$Tissue[ which((meta$sampleid)%>%str_remove("D") %in% colnames(x)) ]
+  Subset<-meta$subset[ which((meta$sampleid)%>%str_remove("D") %in% colnames(x)) ]
+  Individual<-meta$Individual[ which((meta$sampleid)%>%str_remove("D") %in% colnames(x)) ]
+  
+  tissue_colors <- c(Blood = "red", BM = "blue", Spleen = "green", Lung = "purple", LN = "orange")
+  individual_colors <- setNames(brewer.pal(8, "Set1"), unique(Individual))
+  subset_colors <- c("CD56brightCD16-" = "cyan", "CD56dimCD16+" = "magenta")
+  
+  ha = HeatmapAnnotation(df= data.frame(tissue = Tissue, individual = Individual,subset =Subset),
+                         col = list(
+                           tissue = c(Blood = "red", BM = "blue", Spleen = "green", Lung = "purple", LN = "orange"),
+                           individual  = setNames(brewer.pal(4, "Set1"), unique(Individual)),
+                           subset = c("CD56brightCD16-" = "cyan", "CD56dimCD16+" = "magenta")
+                           
+                           ))
+
+ colnamesx<-colnames(x)
+  xscaled<-apply(x, 1,scale)%>%t()
+  colnames(xscaled)<-colnamesx
+  png(paste0("../AS_paper/complex_heatmap__NKs_",title,"scaled_t_magma.png"), width = 18, height = 7.5, units = 'in',res=300)
+   Heatmap(as.matrix(xscaled), 
+                                          bottom_annotation = ha, 
+                                        row_names_side = "left",  row_dend_side = "right",  
+                                        name = "z-score"   
+) 
+                
+  dev.off()
+
+
+
+```
+
+
+```{R visualization NK versus T cells}
+library(tidyverse)
+filename_regression<-paste0(args$oDir,"/",args$oFile,"_mixedmodel_filtered.txt")
+model_results<- fread(filename_regression)
+
+fwrite( model_results%>%filter(fdr<=0.05)%>%arrange(fdr)%>%dplyr::select(-gene, -GENE_TYPE)%>%dplyr::select(GENE_ID,GENE_NAME,everything()),paste0(args$oDir,"/",args$oFile,"supplementary_NKvsTcells.tsv"),sep="\t")
+fwrite( model_results%>%filter(fdr<=0.05,x1>0)%>%arrange(fdr)%>%dplyr::select(-gene, -GENE_TYPE)%>%dplyr::select(GENE_ID,GENE_NAME,everything()),paste0(args$oDir,"/",args$oFile,"supplementary_NKvsTcells_Upregulated.tsv"),sep="\t")
+
+genes_pos<- model_results%>%arrange(fdr)%>%pull(gene)
+
+colnames(logcounts)<-colnames(logcounts)
+model_results_f<-model_results%>%filter(fdr<=0.05,x1>0) 
+
+GENE_NAME
+merged<- merge(model_results_f, AS_risk, by.x = "GENE_NAME", by.y ="Gene")%>%mutate(beta = log(OR))%>% arrange(desc(abs(beta)* -log10(fdr) *x1 )) 
+merged<-merged[!merged$GENE_NAME%>%duplicated(),]
+## ℹ 19,921 more rows
+
+logcountsm<-logcounts%>%rownames_to_column("ID")%>%
+pivot_longer(., -(ID), names_to = "sample_id", values_to = "exp") %>%
+mutate(sample_id = sample_id%>%str_split_i("_",1))%>%dplyr::group_by(ID,sample_id)%>% 
+summarise(avg = mean(exp, na.rm=T)) %>%ungroup()%>% spread(sample_id, avg)%>%as.data.frame()
+nrow(logcounts)
+nrow(logcountsm)
+#geneID <- match$GENE_NAME[which(rownames(match) %in% logcountsm$ID)]
+head(logcountsm)
+head(merged)
+
+logcountsm[logcountsm$ID%in%merged$gene,]
+merged[merged$gene%in%logcountsm$ID]
+
+logcountsm<-merge(merged%>%select(gene,GENE_NAME),logcountsm,by.x=c("gene"),by.y = c("ID"))%>%dplyr::select(-gene)%>%column_to_rownames("GENE_NAME")
+logcountsm
+fa_col <- c("CD8" =  "#D7A4EA", "CD4"= "#D7A4EA" , "MAIT" =  "#D7A4EA", "Vd1" =  "#D7A4EA", "Vd2" =  "#D7A4EA","NKT"=  "#D7A4EA","NK"= "#F79540")
+
+library(ComplexHeatmap)
+groups<-colnames(logcountsm)%>%str_remove("_.+")
+png("AS_paper/complex_heatmap.png", width = 4, height = 8, units = 'in',res=300)
+Heatmap(as.matrix(logcountsm)  )
+dev.off()
+
+# bottom_annotation = HeatmapAnnotation(celltypes = groups,col = list(celltypes = fa_col)
+mat_scaled = t(scale(t(logcountsm)))
+mat_scaled <-t( apply(logcountsm, MARGIN = 1, FUN = scale ))
+colnames(mat_scaled)<-groups
+
+library(ComplexHeatmap)
+#groups<-colnames(logcountsm)%>%str_remove("_.+")
+#mames = c( expression("NK"), expression("iNKT"), expression("CD4"^"+"*"T"), 
+#  expression("V"*delta*"1"), expression("CD8"^"+"*"T"), expression("V"*delta*"2"), 
+#                         expression("MAIT"))
+colnames(mat_scaled)                       
+#colnames(mat_scaled)<-names
+mytitle<- "Genes in AS risk loci that are up-regulated in NK cells \n compared to six T cell subsets"
+names= structure( c( expression("CD4"^"+"*"T"),expression("CD8"^"+"*"T"),  expression("MAIT"),expression("NK"), expression("iNKT"),  
+  expression("V"*delta*"1"),  expression("V"*delta*"2")), names =c( "CD4" , "CD8"  ,"MAIT", "NK" ,  "NKT"  ,"Vd1" , "Vd2" ))
+png("AS_paper/complex_heatmap_scaled.png", width = 4, height = 8, units = 'in',res=300)
+Heatmap(as.matrix(mat_scaled) ,column_labels=names,name = "z-score"  ,column_names_rot = 45, row_names_side = "left",  row_dend_side = "right",column_title = mytitle)
+dev.off()
+
+mytitle<- "Genes in AS risk loci that are up-regulated in NK cells compared to six T cell subsets"
+png("AS_paper/complex_heatmap_scaled_t.png", width = 9, height = 3.5, units = 'in',res=300)
+Heatmap(as.matrix(t(mat_scaled)) ,row_labels=names ,name = "z-score" ,
+column_names_rot = 45, row_names_side = "left",  row_dend_side = "right", column_title = mytitle)
+dev.off()
+
+
+GSE133383_normcounts<-fread("GSE133383_filtered_NKnormalized_counts.csv.gz")
+meta<-fread("GSE133383_meta.txt")%>%dplyr::select(source_name,`Sample Name`,Tissue, subset, Individual , Cell_type)
+meta<- meta%>%mutate(sourcename = ifelse(source_name =="Blood","BL" ,source_name))%>%
+  mutate(sourcename = ifelse(source_name =="BM","BM" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Spleen","SP" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Lung","LU" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="LN","LN" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Blood","BL" ,sourcename))%>%
+  mutate(subsets = ifelse(subset =="CD56brightCD16-","I" ,subset))%>%
+  mutate(subsets = ifelse(subset =="CD56dimCD16+","M" ,subsets))%>%
+  mutate(sampleid=paste0(Individual,"_",sourcename, "_",subsets))%>%
+  mutate(group=paste0(sourcename, "_",subsets))
+
+anno_df = data.frame(
+  foo = meta$sampleid,
+  bar =  meta$source_name
+)
+unique(meta$source_name)
+ha = HeatmapAnnotation(df = anno_df,
+                       col = list( bar = c("Blood"=1,"BM"=2  ,   "Spleen"=3, "Lung"=4,   "LN"=5 )
+                       )
+)
+
+#mygenes<-model_results%>%filter(fdr<=0.05)%>%pull(GENE_NAME)
+mygenes<-model_results%>%filter(fdr<=0.05, x1>0)%>%pull(GENE_NAME)
+title<-"Up"
+x<-GSE133383_normcounts%>%rename( Gene=V1)%>%filter(Gene%in%mygenes)%>%column_to_rownames("Gene")
+  Tissue<-meta$Tissue[ which((meta$sampleid)%>%str_remove("D") %in% colnames(x)) ]
+  Subset<-meta$subset[ which((meta$sampleid)%>%str_remove("D") %in% colnames(x)) ]
+  Individual<-meta$Individual[ which((meta$sampleid)%>%str_remove("D") %in% colnames(x)) ]
+  
+  tissue_colors <- c(Blood = "red", BM = "blue", Spleen = "green", Lung = "purple", LN = "orange")
+  individual_colors <- setNames(brewer.pal(8, "Set1"), unique(Individual))
+  subset_colors <- c("CD56brightCD16-" = "cyan", "CD56dimCD16+" = "magenta")
+  
+  ha = HeatmapAnnotation(df= data.frame(tissue = Tissue, individual = Individual,subset =Subset),
+                         col = list(
+                           tissue = c(Blood = "red", BM = "blue", Spleen = "green", Lung = "purple", LN = "orange"),
+                           individual  = setNames(brewer.pal(4, "Set1"), unique(Individual)),
+                           subset = c("CD56brightCD16-" = "cyan", "CD56dimCD16+" = "magenta")
+                           
+                           ))
+
+ colnamesx<-colnames(x)
+  xscaled<-apply(x, 1,scale)%>%t()
+  colnames(xscaled)<-colnamesx
+  png(paste0("../AS_paper/complex_heatmap__NKs_",title,"scaled_t.png"), width = 9, height = 7.5, units = 'in',res=300)
+   Heatmap(as.matrix(xscaled), 
+                                          bottom_annotation = ha, 
+                                        row_names_side = "left",  row_dend_side = "right",  
+                                        name = "z-score"  
+) 
+                
+  dev.off()
+
+
+
+```
+
+
+```{r tpm count}
+#####     metadata for salmon analysis  ##### 
+library(tidyverse)
+library(data.table)
+
+meta_fastq<-fread("GSE133383_NKsDimBright/GSE133383_meta.txt")%>%select(sampleid=`Sample Name`,Run)%>%mutate(R1= paste0(Run,"_pass_1.fastq.gz") , R2 = paste0(Run,"_pass_2.fastq.gz")) 
+fwrite(file = "GSE133383_NKsDimBright/metadata.tsv", meta_fastq, sep = "\t")
+library(tximport)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene)
+
+dir<-c("GSE133383_NKsDimBright")
+#salmon index using gencode.v38.primary_assembly.transcripts.fa
+
+#https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_38/gencode.v38.annotation.gff3.gz
+setwd(dir)
+system("wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_38/gencode.v38.primary_assembly.annotation.gtf.gz")
+system("wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_38/gencode.v38.primary_assembly.annotation.gff3.gz")
+setwd("..")
+
+annotations <- 
+    file.path("/lab-share/IM-Gutierrez-e2/Public/References/Annotations/hsapiens", 
+              "gencode.v38.primary_assembly.annotation.gtf") %>% 
+    read_tsv(comment = "#", col_types = "c-cii-c-c",
+             col_names = c("chr", "feature", "start", "end", "strand", "info"))
+
+bed <- annotations %>%
+    filter(feature == "gene") %>%
+    mutate(tss = case_when(strand == "+" ~ start, 
+			   strand == "-" ~ end, 
+			   TRUE ~ NA_integer_)) %>%
+    mutate(gene_id = str_extract(info, "(?<=gene_id\\s\")[^\"]+"),
+	   gene_name = str_extract(info, "(?<=gene_name\\s\")[^\"]+"),
+	   gene_id = sub("^(ENSG\\d+)\\.\\d+((_PAR_Y)?)$", "\\1\\2", gene_id)) %>%
+    dplyr::select(chr, start, end, gene_id, gene_name)
+
+
+txdb <- makeTxDbFromGFF(file=fs::path(dir,"gencode.v38.primary_assembly.annotation.gtf.gz"),format="gtf")
+k <- keys(txdb, keytype = "TXNAME")
+tx2gene <- AnnotationDbi::select(txdb, k, "GENEID", "TXNAME")
+
+files <- file.path(fs::path(dir, "results/salmon", meta_fastq$Run, "quant.sf"))
+names(files) <- paste0(meta_fastq$sampleid)
+
+library(tximport)
+txi <- tximport(files, type = "salmon", tx2gene = tx2gene)
+names(txi)
+
+annotations<-tx2gene%>%mutate(gene_id= GENEID%>%str_remove("\\..+"),gene_transcrit= TXNAME)%>%dplyr::select(gene_id, gene_transcrit)
+
+sample_ids <- "/lab-share/IM-Gutierrez-e2/Public/Sarah/AADCRC/Epithelial_stim/rawdata/sra_list.txt" %>% read_lines()
+sample_ids<- meta_fastq$Run
+
+quant_df <- file.path("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/GSE133383_NKsDimBright/results/salmon/", sample_ids,"quant.sf")%>%
+  setNames(sample_ids) %>%
+  map_dfr(read_tsv, .id="sampleid")
+
+quant_genes_df <- quant_df %>%
+  left_join(annotations, by=c("Name"="gene_transcrit"),relationship = "many-to-many") %>%
+  group_by(sampleid, gene_id)%>%
+  summarise(tpm=sum(TPM)) %>%
+  ungroup()
+
+merged<-merge(quant_genes_df,meta%>%select(Run,sample=sampleid),by.x="sampleid",by.y="Run")
+tpm<-merged%>%dplyr::select(-sampleid)%>%
+pivot_wider( names_from = "sample",values_from="tpm",names_repair ="unique")
+
+tpm<-merged%>%dplyr::select(-sampleid)%>%
+pivot_wider( names_from = "sample",values_from="tpm",names_repair ="unique")
+fwrite(tpm, "/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/GSE133383_NKsDimBright/tpm_counts_v38hg38.tsv")
+
+```
+
+
+
+```{r DEA }
+# analysis per tissue
+meta<-fread(fs::path("GSE133383_NKsDimBright","GSE133383_meta.txt"))%>%dplyr::select(Run,source_name,`Sample Name`,Tissue, subset, Individual , Cell_type)
+meta<- meta%>%mutate(sourcename = ifelse(source_name =="Blood","BL" ,source_name))%>%
+  mutate(sourcename = ifelse(source_name =="BM","BM" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Spleen","SP" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Lung","LU" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="LN","LN" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Blood","BL" ,sourcename))%>%
+  mutate(subsets = ifelse(subset =="CD56brightCD16-","I" ,subset))%>%
+  mutate(subsets = ifelse(subset =="CD56dimCD16+","M" ,subsets))%>%
+  mutate(sampleid=paste0(Individual,"_",sourcename, "_",subsets))%>%
+  mutate(group=paste0(sourcename, "_",subsets))
+
+
+tpm<- fread("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/GSE133383_NKsDimBright/tpm_counts_v38hg38.tsv")
+
+tpm_ed<- tpm%>%column_to_rownames("gene_id")
+log2tpm<-log2(tpm_ed+1)
+
+colnames(log2tpm)<-paste0(colnames(log2tpm))
+args<-list()
+args$number <- 3
+
+i<-3
+args$oDir<-"GSE133383_NKsDimBright/DEA"
+
+tissues<-paste0(unique(meta$sourcename))
+for(i in seq(from = 1  ,to = length(tissues) )){
+
+m<-meta%>%as.data.frame()%>%dplyr::filter(sourcename%in%c(tissues[i]))
+contrast<-list()
+contrast$x <- paste0(tissues[i],"_","I")
+contrast$y <- paste0(tissues[i],"_","M")
+
+
+meta_matrix<-m
+meta_matrix<-meta_matrix%>%mutate(contrast=ifelse(group==contrast$x,1,0))%>%as.data.frame()
+args$name<-"contrast"
+args$r<-"Individual" 
+args$f<-NA #add sex as fixed effect
+args$number<- 3
+args$sorting_column<-"sampleid" #column in dataframe to sort if changes
+
+
+filename<-paste0("results_",contrast$x,"_vs_",contrast$y)
+args$oFile<-filename
+#Filter by condition and time
+group1<-m%>%filter(group%in%c(contrast$x))%>%dplyr::pull(sampleid)
+group2<-m%>%filter(group%in%contrast$y)%>%dplyr::pull(sampleid)
+head(log2tpm)
+
+logcounts<-cbind(log2tpm[,group1],log2tpm[,group2])
+
+x <- as.factor(m$group)
+x<- relevel(x,contrast$x)
+# This should work with variables as "character" as well...but R works in mysterious ways, so converting to factors just in case
+m$group<- as.factor(m$group)
+m$group<- relevel(m$group,contrast$x)
+
+
+print("Done")
+fixed<-NULL
+random<-NULL
+covars<-0
+if(is.character(args$r)){
+	covars<-covars+1
+	random<-args$r
+}
+
+if(is.character(args$f)){
+	covars<-covars-1
+	if(grepl(",",args$f)){
+		fixed<-str_split(args$f,",",simplify=T)
+		#print(paste(paste("meta_matrix$", fixed, sep=""), collapse=" + "))
+	}else{
+		fixed<-args$f
+	}
+}
+
+
+#Subseting Counts Matrix
+if(!is.null(args$columns)){
+  print(paste("Subsetting columns from",args$columns,sep=" "))
+  selected_columns<-read.table(args$columns)
+  logcounts <- logcounts %>% select(selected_columns$V1)
+  #meta_matrix<-meta_matrix[which(meta_matrix$sorting_column %in% selected_columns$V1),]
+}
+
+#Sorting Metamatrix
+
+if(ncol(logcounts)!=sum(colnames(logcounts) %in% meta_matrix[,args$sorting_column])){
+	print("ERROR: Counts column names don't match the meta_matrix.")
+	print("Levels in sorting_column:\n")
+	print(meta_matrix[,args$sorting_column])
+	print("Columns in counts:")
+	print(colnames(logcounts))
+	stop()
+}else{
+	row.names(meta_matrix)<-meta_matrix[,args$sorting_column]
+	meta_matrix<-meta_matrix[colnames(logcounts),]
+	#print(meta_matrix)
+}
+
+
+#Defining Output Path
+output_path<-args$oDir
+if(!dir.exists(output_path)){
+ dir.create(output_path)
+ print(paste("Created output directory:",output_path,sep=""))
+}
+
+if(isTRUE(args$a)){
+	log_filtered<-logcounts
+	print(paste0("Testing all instances in the counts matrix ",nrow(log_filtered)))
+}else{
+
+	minimum<-as.integer(args$number)
+	print(paste0("Filtering instances with a value greater than 1 in at least ",minimum," columns..."))
+	log_filtered<- logcounts[which(rowSums(logcounts>1)>=minimum),]
+	print(paste0("Testing ",nrow(log_filtered)," rows."))
+	
+}
+
+
+library(edgeR)
+#Running Regression 
+suppressMessages({
+    model_results<-selection_model(name=args$name,expressed=log_filtered,covR=random,covF=fixed,covType=as.character(covars))
+})
+
+model_results<-model_results%>%as.data.frame()%>%rownames_to_column("gene")%>%arrange(p_value)
+library(qvalue)
+pvalname<-paste0("p_value")
+fdrname <-paste0("fdr")
+fdr<-qvalue(p=model_results[[pvalname]])
+model_results$fdr<-fdr$qvalues
+#Writing output file
+filename_regression<-paste(output_path,"/",args$oFile,"_mixedmodel_filtered.txt", sep="")
+fwrite(model_results, filename_regression)
+
+}
+  
+```
+
+```{r summary}
+meta<-fread(fs::path("GSE133383_NKsDimBright","GSE133383_meta.txt"))%>%dplyr::select(Run,source_name,`Sample Name`,Tissue, subset, Individual , Cell_type)
+meta<- meta%>%mutate(sourcename = ifelse(source_name =="Blood","BL" ,source_name))%>%
+  mutate(sourcename = ifelse(source_name =="BM","BM" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Spleen","SP" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Lung","LU" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="LN","LN" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Blood","BL" ,sourcename))%>%
+  mutate(subsets = ifelse(subset =="CD56brightCD16-","I" ,subset))%>%
+  mutate(subsets = ifelse(subset =="CD56dimCD16+","M" ,subsets))%>%
+  mutate(sampleid=paste0(Individual,"_",sourcename, "_",subsets))%>%
+  mutate(group=paste0(sourcename, "_",subsets))
+
+tpm<- fread("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/GSE133383_NKsDimBright/tpm_counts_v38hg38.tsv")
+
+tpm_ed<- tpm%>%column_to_rownames("gene_id")
+log2tpm<-log2(tpm_ed+1)
+
+args<-list()
+args$oDir<-"GSE133383_NKsDimBright/DEA"
+output_path<- args$oDir
+tissues<-paste0(unique(meta$sourcename))
+contrast<-list()
+contrast$x <- paste0(tissues,"_","I")
+contrast$y <- paste0(tissues,"_","M")
+
+filename<-paste0("results_",contrast$x,"_vs_",contrast$y)
+args$oFile<-filename
+
+
+
+files<-paste(output_path,"/",args$oFile,"_mixedmodel_filtered.txt", sep="")
+lapply(files, function(x){
+  Name<-basename(x)%>%str_remove_all("results_|_mixedmodel_filtered.txt")
+  de<-fread(x)
+  de<-de%>%dplyr::rename(Beta=x1, pvalue =p_value )
+
+  de$FDR05<-"0"
+  de$FDR10<-"0"
+
+  de$FDR05[de$fdr <= 0.05] <- "1" 
+  de$FDR10[de$fdr <= 0.1] <- "1"
+
+ fwrite(de, fs::path(outdir,paste0("Table_annotated_",Name,".txt")))
+
+})
+
+Name<-basename(files)%>%str_remove_all("results_|_mixedmodel_filtered.txt")
+files<-fs::path(outdir,paste0("Table_annotated_",Name,".txt"))
+
+
+i<-1
+library(dplyr)
+library(DT)
+summary_table<-c()
+i<-1
+for(i in seq(from = 1 ,to = length(contrast$x))){
+filename<-paste0("results_",contrast$x[i],"_vs_",contrast$y[i],"_mixedmodel_filtered.txt")
+
+name<-paste0(contrast$x[i],"_vs_",contrast$y[i])
+print(name)
+outdir<-fs::path(output_path)
+
+table<-fread(fs::path(outdir,paste0("Table_annotated_",name,".txt")))
+bf<-0.05/length(table$gene)
+print(sum(table$pvalue<=bf))
+#Filter genes with pvalue NA
+table<-table%>%dplyr::filter(!is.na(pvalue))
+
+summary_sample<-data.frame(Condition=name,Genes_Tested= length(table$gene),Beta_abs1=sum(abs(table$Beta)>=1),
+                           PassBonferroni=sum(table$pvalue<=bf), BetaBH=sum(abs(table$Beta)>=1&table$pvalue<=bf),
+                           BetaBH_UP=sum(table$Beta>=1&table$pvalue<=bf),BetaBH_DOWN=sum(table$Beta<=-1&table$pvalue<=bf),
+                           FDR_05=sum(table$fdr<=0.05), FDR_10=sum(table$fdr<=0.1),
+                           BetaFDR=sum(abs(table$Beta)>=1&table$fdr<=0.05),
+                           BetaFDR_UP=sum(table$Beta>=1&table$fdr<=0.05),BetaFDR_DOWN=sum(table$Beta<=-1&table$fdr<=0.05) )
+                           
+
+summary_table<-rbind(summary_table,summary_sample)
+
+}
+
+names(summary_table)
+names(summary_table)<-c("Condition","# tested genes","abs(beta)>=1","Pass Bonferroni","Beta & Bonf","Beta & Bonf UP","Beta & BH DOWN","5% FDR","10% FDR"," abs(beta) >=1 & 5% FDR", "Beta & 5% FDR UP","Beta & 5% FDR DOWN")
+summary_table<-summary_table%>%mutate(Condition=Condition%>%str_replace("_I_","_CD56brightCD16neg_")%>%str_replace("_M","_CD56dimCD16pos")   )
+fwrite(summary_table,file=fs::path(args$oDir,"Report_table.txt"), sep="\t")
+
+Volcano_plot<-function(de,logfc_val=1,Name="x",org="human",outdir="LinearModel_Results"){
+  library(AnnotationDbi)
+  library(org.Hs.eg.db)
+  library("EnhancedVolcano")
+  library(fs)
+  library(tidyverse)
+  library(org.Mm.eg.db)
+  library(dplyr)
+logFC<-c("Beta","log2FoldChange")
+pval<-c("pvalue","pvalue")
+
+xname<-as.data.frame(de)%>%dplyr::select(any_of(logFC))%>%colnames()
+padj_cutoff<-0.05/dim(de)[1]
+
+all<-as.data.frame(de)%>%dplyr::mutate(ENSEMBL=sub("\\..+","",ENSEMBL))%>%
+  dplyr::select("ENSEMBL",log2FoldChange=any_of(logFC),pvalue=any_of(pval))
+
+cols <- c("ENSEMBL","SYMBOL", "GENENAME", "ENTREZID")
+
+if(org=="human"){
+Maptable<-AnnotationDbi::select(org.Hs.eg.db, keys=as.character(all$ENSEMBL), columns=cols, keytype="ENSEMBL")
+Maptable<-Maptable%>%group_by(ENSEMBL)%>%distinct(ENSEMBL,.keep_all = TRUE)
+
+}
+
+if(org=="mouse"){
+Maptable<-AnnotationDbi::select(org.Mm.eg.db, keys=as.character(all$ENSEMBL), columns=cols, keytype="ENSEMBL")
+Maptable<-Maptable%>%group_by(ENSEMBL)%>%distinct(ENSEMBL,.keep_all = TRUE)
+}
+
+paste0("Number of unique entrez ids: ",length(intersect(Maptable$ENTREZID,Maptable$ENTREZID)))
+
+de<-merge(all,Maptable)
+
+# Add a column to the data frame to specify if they are UP- or DOWN- regulated (log2FoldChange respectively positive or negative)
+# add a column of NAs
+de$diffexpressed <- "NO"
+de$diffexpressed[de$log2FoldChange >= logfc_val & de$pvalue <= padj_cutoff] <- "UP"
+de$diffexpressed[de$log2FoldChange <= -logfc_val & de$pvalue <= padj_cutoff] <- "DOWN"
+print(table(de$diffexpressed))
+# create a named vector: the values are the colors to be used, the names are the categories they will be assigned to:
+mycolors <- c("blue", "red", "black")
+names(mycolors) <- c("DOWN", "UP", "NO")
+de<-de[order(de$pvalue,decreasing = FALSE),]
+de$delabel <- NA
+de$delabel[de$diffexpressed != "NO"] <- de$SYMBOL[de$diffexpressed != "NO"]
+if(is.na(Name)){
+  Name<-" "
+}
+
+if(xname=="log2FoldChange"){
+
+  p<-EnhancedVolcano(toptable = de,x = "log2FoldChange",y = "pvalue",lab=de$SYMBOL,labSize = 4.5,
+                xlim = c(min(de$log2FoldChange)-1,max(de$log2FoldChange)+1),pointSize = 3,
+                      colAlpha = .2,legendLabSize = 9,title = paste0("Volcano plot ",gsub("_"," ",Name)),FCcutoff =logfc_val,pCutoff = padj_cutoff)
+
+}
+
+if(xname=="Beta"){
+
+  p<-EnhancedVolcano(toptable = de,x = "log2FoldChange",y = "pvalue",lab=de$SYMBOL,labSize = 4.5,
+                xlim = c(min(de$log2FoldChange)-1,max(de$log2FoldChange)+1),pointSize = 3,
+                      colAlpha = .2,legendLabSize = 9,title = paste0("Volcano plot ",gsub("_"," ",Name)),FCcutoff =logfc_val,pCutoff = padj_cutoff,xlab = xname,legendLabels = c('NS', xname, expression(p - value), paste0("p-value and beta"))                                                                  )
+    
+}
+
+ggsave(p,filename=fs::path(outdir,paste0(Name,"_VolcanoPlot",".pdf")),width = 10,height = 10,dpi = 600,device = "pdf")
+ggsave(p,filename= fs::path(outdir,paste0(Name,"_VolcanoPlot",".png")),width = 10,height = 10,dpi = 600,device = "png")
+}
+
+
+
+for(i in seq(from = 1  ,to = length(contrast$x))){
+filename<-paste0("Table_annotated_",contrast$x[i],"_vs_",contrast$y[i],".txt")
+name<-paste0(contrast$x[i],"_vs_",contrast$y[i])
+de<-fread(fs::path(outdir,filename))%>%dplyr::rename(ENSEMBL=gene)
+fs::dir_create( fs::path(outdir,"plots"))
+Volcano_plot(de,Name = name, outdir= fs::path(outdir,"plots"))
+}
+
+
+```
+
+```{r NK dim versus bright }
+dir<-"GSE133383_NKsDimBright"
+library(data.table)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(qvalue)
+library(gplots)
+library(ggplot2)
+library(patchwork)
+library(data.table)
+library(tidyverse)
+library(ComplexHeatmap)
+#GSE133383_counts<-fread("GSE133383_filtered_NKcounts_table.gz")
+annotations <- 
+    file.path("/lab-share/IM-Gutierrez-e2/Public/References/Annotations/hsapiens", 
+              "gencode.v38.primary_assembly.annotation.gtf") %>% 
+    read_tsv(comment = "#", col_types = "c-cii-c-c",
+             col_names = c("chr", "feature", "start", "end", "strand", "info"))
+
+bed <- annotations %>%
+    filter(feature == "gene") %>%
+    mutate(tss = case_when(strand == "+" ~ start, 
+			   strand == "-" ~ end, 
+			   TRUE ~ NA_integer_)) %>%
+    mutate(gene_id = str_extract(info, "(?<=gene_id\\s\")[^\"]+"),
+	   gene_name = str_extract(info, "(?<=gene_name\\s\")[^\"]+"),
+	   gene_id = sub("^(ENSG\\d+)\\.\\d+((_PAR_Y)?)$", "\\1\\2", gene_id)) %>%
+    dplyr::select(chr, start, end, gene_id, gene_name)
+
+
+
+tpm<- fread("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/GSE133383_NKsDimBright/tpm_counts_v38hg38.tsv")
+
+tpm_ed<- tpm%>%column_to_rownames("gene_id")
+log2tpm<-log2(tpm_ed+1)%>%rownames_to_column("V1")
+
+
+meta<-fread(fs::path(dir, "GSE133383_meta.txt"))%>%dplyr::select(Run,source_name,`Sample Name`,Tissue, subset, Individual , Cell_type)
+meta<- meta%>%mutate(sourcename = ifelse(source_name =="Blood","BL" ,source_name))%>%
+  mutate(sourcename = ifelse(source_name =="BM","BM" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Spleen","SP" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Lung","LU" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="LN","LN" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Blood","BL" ,sourcename))%>%
+  mutate(subsets = ifelse(subset =="CD56brightCD16-","I" ,subset))%>%
+  mutate(subsets = ifelse(subset =="CD56dimCD16+","M" ,subsets))%>%
+  mutate(sampleid=paste0(Individual,"_",sourcename, "_",subsets))%>%
+  mutate(group=paste0(sourcename, "_",subsets))
+
+anno_df = data.frame(
+  foo = meta$sampleid,
+  bar =  meta$source_name
+)
+unique(meta$source_name)
+ha = HeatmapAnnotation(df = anno_df,
+                       col = list( bar = c("Blood"=1,"BM"=2  ,   "Spleen"=3, "Lung"=4,   "LN"=5 )
+                       )
+)
+
+GSE133383_counts<-merge(log2tpm,bed%>%select(gene_id, gene_name), by.x= "V1", by.y = "gene_id")
+
+
+GSE133383_counts<-GSE133383_counts%>%filter(gene_name%in%genes)%>%select(-V1)%>%column_to_rownames("gene_name")
+library(GenomicFeatures)
+
+args<-list()
+args$oDir<-"GSE133383_NKsDimBright/DEA"
+output_path<- args$oDir
+tissues<-paste0(unique(meta$sourcename))
+contrast<-list()
+contrast$x <- paste0(tissues,"_","I")
+contrast$y <- paste0(tissues,"_","M")
+
+filename<-paste0("results_",contrast$x,"_vs_",contrast$y)
+args$oFile<-filename
+
+files<-paste(output_path,"/",args$oFile,"_mixedmodel_filtered.txt", sep="")
+Name<-basename(files)%>%str_remove_all("results_|_mixedmodel_filtered.txt")
+files<-fs::path(args$oDir,paste0("Table_annotated_",Name,".txt"))
+
+res<-lapply(files, function(x){
+  Name<-basename(x)%>%str_remove_all("Table_annotated_|.txt")
+  de<-fread(x)
+  de$name<-Name
+  de
+})%>%rbindlist()
+
+#remove beta parameter 
+DEgenes<- res%>%dplyr::filter(abs(Beta)>0, fdr <= 0.05)%>%pull(gene)%>%unique()
+annotation_filtered<-bed%>%filter(gene_id %in%DEgenes)
+
+genes<-data.table::fread(fs::path("innateness_snpsea", "AS_geneticrisk.tsv"))%>%pull(Gene)%>%unique()
+genes[genes=="TLR4"]
+genes[genes=="CCL2/7/8/11"]<- "CCL2/CCL7/CCL8/CCL11"
+genes<-genes%>%str_split("/")%>%unlist()
+
+genes_f<- annotation_filtered%>%filter(gene_name%in%genes)%>%pull(gene_name)
+library(circlize)
+library(vridis)
+
+merged<-merge(res%>%dplyr::mutate(significance = ifelse(abs(Beta)>1 & fdr <= 0.05, TRUE,FALSE)), annotation_filtered%>%filter(gene_name%in%genes), by.x="gene",by.y="gene_id")
+merged_selected_cols<-merged%>%select(name, gene_name, fdr)
+DEgenes<- merged%>%dplyr::filter(abs(Beta)>0, fdr <= 0.05)%>%pull(gene_name)%>%unique()
+
+fdr_table<-merged_selected_cols%>%pivot_wider( names_from = "name",values_from="fdr",names_repair ="unique")
+fdr_table<-fdr_table[match(rownames(x),fdr_table$gene_name),]
+merged_selected_cols<-merged%>%select(name, gene_name, significance)
+significance_table<-merged_selected_cols%>%pivot_wider( names_from = "name",values_from="significance",names_repair ="unique")
+significance_table<-significance_table[match(rownames(x),significance_table$gene_name),]
+
+color_scale <- viridis(n_colors)
+
+# Define pvalue_col_fun
+pvalue_col_fun = colorRamp2(c(0, 1,3), c( "white","grey" ,"red"))
+
+
+lgd_pvalue = Legend(title = "p-value", col_fun = pvalue_col_fun, at = c(0, 1, 2, 3), 
+    labels = c("1", "0.1", "0.01", "0.001"))
+# and one for the significant p-values
+lgd_sig = Legend(pch = "*", type = "points", labels = "< 0.05")
+
+# Create an empty list to store the annotations
+annotation_list = list()
+
+# Loop through the columns in fdr_table
+for (col_name in colnames(fdr_table)[-1]) {
+  pch = rep(NA, nrow(fdr_table))
+  pch[fdr_table[[col_name]]<0.05] = "*"
+  annotation_list[[col_name]] = anno_simple( -log10(fdr_table[[col_name]]), col = pvalue_col_fun, pch = pch,which="row")
+}
+names(annotation_list)
+# Cr
+
+ha2 = rowAnnotation(
+    BL = annotation_list$BL_I_vs_BL_M, BM = annotation_list$BM_I_vs_BM_M, 
+    LN = annotation_list$LN_I_vs_LN_M,LU = annotation_list$LU_I_vs_LU_M, SP = annotation_list$SP_I_vs_SP_M, 
+    annotation_name_side = "bottom"
+    )
+
+head(GSE133383_counts)
+nrow(GSE133383_counts)
+#GSE133383_counts<-GSE133383_counts%>%filter(gene_name%in%genes_f)%>%select(-V1)%>%column_to_rownames("gene_name")
+
+x<-GSE133383_counts%>%rownames_to_column("ID")%>%
+pivot_longer(., -(ID), names_to = "sample_id", values_to = "exp") %>%
+mutate(sample_id = paste0 (sample_id%>%str_split_i("_",2), "_" ,sample_id%>%str_split_i("_",3))  )%>%dplyr::group_by(ID,sample_id)%>% 
+summarise(avg = mean(exp, na.rm=T)) %>%ungroup()%>% spread(sample_id, avg)%>%as.data.frame() %>%filter(ID%in%DEgenes)%>%column_to_rownames("ID")
+nrow(x)
+colnames(x)
+meta_ed<- meta%>%dplyr::select(Tissue,group,subset)%>%unique()
+Tissue<-meta_ed$Tissue[ match(colnames(x), meta_ed$group ) ]
+Subset<-meta_ed$subset[ match(colnames(x), meta_ed$group) ]
+#Individual<-meta$Individual[ which(meta$group %in% colnames(x)) ]
+  
+  tissue_colors <- c(Blood = "red", BM = "blue", Spleen = "green", Lung = "purple", LN = "orange")
+  individual_colors <- setNames(brewer.pal(8, "Set1"), unique(Individual))
+  subset_colors <- c("CD56brightCD16-" = "cyan", "CD56dimCD16+" = "magenta")
+  
+  ha = HeatmapAnnotation(df= data.frame(tissue = Tissue,subset =Subset),
+                         col = list(
+                           tissue = c(Blood = "red", BM = "blue", Spleen = "green", Lung = "purple", LN = "orange"),
+                           subset = c("CD56brightCD16-" = "cyan", "CD56dimCD16+" = "magenta")),   annotation_name_side = "left")
+
+
+colnamesx<-colnames(x)
+xscaled<-apply(x, 1,scale)%>%t()
+colnames(xscaled)<-colnamesx
+#xscaled<-x
+
+xscaled<-xscaled%>%na.omit()
+nrow(xscaled)
+png(paste0("AS_paper/complex_heatmap_NKs_tissues_scaled_t.png"), width = 9, height = 7.5, units = 'in',res=300)
+   ht = Heatmap(as.matrix(xscaled), 
+                                          bottom_annotation = ha, right_annotation = ha2,
+                                        row_names_side = "left",  row_dend_side = "right",  
+                                        name = "z-score"  
+) 
+draw(ht, annotation_legend_list = list(lgd_pvalue, lgd_sig))
+
+  dev.off()
+
+
+
+
+
+
+```
+
+
+
+```{r NK dim versus bright all}
+dir<-"GSE133383_NKsDimBright"
+library(data.table)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(qvalue)
+library(gplots)
+library(ggplot2)
+library(patchwork)
+library(data.table)
+library(tidyverse)
+library(ComplexHeatmap)
+#GSE133383_counts<-fread("GSE133383_filtered_NKcounts_table.gz")
+annotations <- 
+    file.path("/lab-share/IM-Gutierrez-e2/Public/References/Annotations/hsapiens", 
+              "gencode.v38.primary_assembly.annotation.gtf") %>% 
+    read_tsv(comment = "#", col_types = "c-cii-c-c",
+             col_names = c("chr", "feature", "start", "end", "strand", "info"))
+
+bed <- annotations %>%
+    filter(feature == "gene") %>%
+    mutate(tss = case_when(strand == "+" ~ start, 
+			   strand == "-" ~ end, 
+			   TRUE ~ NA_integer_)) %>%
+    mutate(gene_id = str_extract(info, "(?<=gene_id\\s\")[^\"]+"),
+	   gene_name = str_extract(info, "(?<=gene_name\\s\")[^\"]+"),
+	   gene_id = sub("^(ENSG\\d+)\\.\\d+((_PAR_Y)?)$", "\\1\\2", gene_id)) %>%
+    dplyr::select(chr, start, end, gene_id, gene_name)
+
+
+
+tpm<- fread("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/GSE133383_NKsDimBright/tpm_counts_v38hg38.tsv")
+
+tpm_ed<- tpm%>%column_to_rownames("gene_id")
+colnames(tpm_ed)<-colnames(tpm_ed)%>%str_replace("_M", "_CD56bright")%>%str_replace("_I", "_CD56dim")
+log2tpm<-log2(tpm_ed+1)%>%rownames_to_column("V1")
+head(log2tpm)
+
+meta<-fread(fs::path(dir, "GSE133383_meta.txt"))%>%dplyr::select(Run,source_name,`Sample Name`,Tissue, subset, Individual , Cell_type)
+meta<- meta%>%mutate(sourcename = ifelse(source_name =="Blood","BL" ,source_name))%>%
+  mutate(sourcename = ifelse(source_name =="BM","BM" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Spleen","SP" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Lung","LU" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="LN","LN" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Blood","BL" ,sourcename))%>%
+  mutate(subsets = ifelse(subset =="CD56brightCD16-","CD56bright" ,subset))%>% #I
+  mutate(subsets = ifelse(subset =="CD56dimCD16+","CD56dim" ,subsets))%>% #M
+  mutate(sampleid=paste0(Individual,"_",sourcename, "_",subsets))%>%
+  mutate(group=paste0(sourcename, "_",subsets))
+
+anno_df = data.frame(
+  foo = meta$sampleid,
+  bar =  meta$source_name
+)
+unique(meta$source_name)
+ha = HeatmapAnnotation(df = anno_df,
+                       col = list( bar = c("Blood"=1,"BM"=2  ,   "Spleen"=3, "Lung"=4,   "LN"=5 )
+                       )
+)
+
+GSE133383_counts<-merge(log2tpm,bed%>%select(gene_id, gene_name), by.x= "V1", by.y = "gene_id")
+
+
+GSE133383_counts<-GSE133383_counts%>%filter(gene_name%in%genes)%>%select(-V1)%>%column_to_rownames("gene_name")
+library(GenomicFeatures)
+
+args<-list()
+args$oDir<-"GSE133383_NKsDimBright/DEA"
+output_path<- args$oDir
+tissues<-paste0(unique(meta$sourcename))
+contrast<-list()
+contrast$x <- paste0(tissues,"_","I")
+contrast$y <- paste0(tissues,"_","M")
+
+filename<-paste0("results_",contrast$x,"_vs_",contrast$y)
+args$oFile<-filename
+
+files<-paste(output_path,"/",args$oFile,"_mixedmodel_filtered.txt", sep="")
+Name<-basename(files)%>%str_remove_all("results_|_mixedmodel_filtered.txt")
+files<-fs::path(args$oDir,paste0("Table_annotated_",Name,".txt"))
+
+res<-lapply(files, function(x){
+  Name<-basename(x)%>%str_remove_all("Table_annotated_|.txt")
+  de<-fread(x)
+  de$name<-Name
+  de
+})%>%rbindlist()
+
+#remove beta parameter 
+DEgenes<- res%>%dplyr::filter(abs(Beta)>0, fdr <= 0.05)%>%pull(gene)%>%unique()
+annotation_filtered<-bed%>%filter(gene_id %in%DEgenes)
+
+genes<-data.table::fread(fs::path("innateness_snpsea", "AS_geneticrisk.tsv"))%>%pull(Gene)%>%unique()
+genes[genes=="TLR4"]
+genes[genes=="CCL2/7/8/11"]<- "CCL2/CCL7/CCL8/CCL11"
+genes<-genes%>%str_split("/")%>%unlist()
+
+genes_f<- annotation_filtered%>%filter(gene_name%in%genes)%>%pull(gene_name)
+library(circlize)
+library(vridis)
+
+merged<-merge(res%>%dplyr::mutate(significance = ifelse(abs(Beta)>1 & fdr <= 0.05, TRUE,FALSE)), annotation_filtered%>%filter(gene_name%in%genes), by.x="gene",by.y="gene_id")
+merged_selected_cols<-merged%>%select(name, gene_name, fdr)
+DEgenes<- merged%>%dplyr::filter(abs(Beta)>0, fdr <= 0.05)%>%pull(gene_name)%>%unique()
+
+
+x<-GSE133383_counts%>%rownames_to_column("ID")%>%as.data.frame() %>%filter(ID%in%DEgenes)%>%column_to_rownames("ID")
+nrow(x)
+colnames(x)
+
+fdr_table<-merged_selected_cols%>%pivot_wider( names_from = "name",values_from="fdr",names_repair ="unique")
+fdr_table<-fdr_table[match(rownames(x),fdr_table$gene_name),]
+
+merged_selected_cols<-merged%>%select(name, gene_name, Beta)
+
+beta_table<-merged_selected_cols%>%pivot_wider( names_from = "name",values_from="Beta",names_repair ="unique")
+beta_table<-beta_table[match(rownames(x),beta_table$gene_name),]
+beta_table<-beta_table%>%column_to_rownames("gene_name")
+colnames(beta_table)<-colnames(beta_table)%>%str_replace("_M", "_CD56bright")%>%str_replace("_I", "_CD56dim")
+head(beta_table)
+png(paste0("AS_paper/NKs_tissues_beta_all.png"), width = 9, height = 9.5, units = 'in',res=300)
+  ht = Heatmap(as.matrix(beta_table))
+  ht
+dev.off()
+
+merged_selected_cols<-merged%>%select(name, gene_name, significance)
+significance_table<-merged_selected_cols%>%pivot_wider( names_from = "name",values_from="significance",names_repair ="unique")
+significance_table<-significance_table[match(rownames(x),significance_table$gene_name),]
+
+color_scale <- viridis(n_colors)
+
+# Define pvalue_col_fun
+pvalue_col_fun = colorRamp2(c(0, 1,3), c( "white","grey" ,"red"))
+
+
+lgd_pvalue = Legend(title = "p-value", col_fun = pvalue_col_fun, at = c(0, 1, 2, 3), 
+    labels = c("1", "0.1", "0.01", "0.001"))
+# and one for the significant p-values
+lgd_sig = Legend(pch = "*", type = "points", labels = "< 0.05")
+
+# Create an empty list to store the annotations
+annotation_list = list()
+
+# Loop through the columns in fdr_table
+for (col_name in colnames(fdr_table)[-1]) {
+  pch = rep(NA, nrow(fdr_table))
+  pch[fdr_table[[col_name]]<0.05] = "*"
+  annotation_list[[col_name]] = anno_simple( -log10(fdr_table[[col_name]]), col = pvalue_col_fun, pch = pch,which="row")
+}
+names(annotation_list)
+# Cr
+
+ha2 = rowAnnotation(
+
+    LN = annotation_list$LN_I_vs_LN_M,LU = annotation_list$LU_I_vs_LU_M, SP = annotation_list$SP_I_vs_SP_M, BM = annotation_list$BM_I_vs_BM_M,  BL = annotation_list$BL_I_vs_BL_M,
+    annotation_name_side = "bottom"
+    )
+
+head(GSE133383_counts)
+nrow(GSE133383_counts)
+#GSE133383_counts<-GSE133383_counts%>%filter(gene_name%in%genes_f)%>%select(-V1)%>%column_to_rownames("gene_name")
+
+
+meta_ed<- meta%>%dplyr::select(Tissue,group,subset)%>%unique()
+Tissue<-meta$Tissue[ match(colnames(x), meta$sampleid ) ]
+Subset<-meta$subset[ match(colnames(x), meta$sampleid) ]
+Individual<-meta$Individual[ which(meta$sampleid %in% colnames(x)) ]
+  
+  tissue_colors <- c(Blood = "red", BM = "blue", Spleen = "green", Lung = "purple", LN = "orange")
+  individual_colors <- setNames(brewer.pal(8, "Set1"), unique(Individual))
+  subset_colors <- c("CD56brightCD16-" = "cyan", "CD56dimCD16+" = "magenta")
+  
+  ha = HeatmapAnnotation(df= data.frame(tissue = Tissue,subset =Subset),
+                         col = list(
+                           tissue = c(Blood = "red", BM = "blue", Spleen = "green", Lung = "purple", LN = "orange"),
+                           subset = c("CD56brightCD16-" = "cyan", "CD56dimCD16+" = "magenta")),   annotation_name_side = "left")
+
+
+colnamesx<-colnames(x)
+xscaled<-apply(x, 1,scale)%>%t()
+colnames(xscaled)<-colnamesx
+#xscaled<-x
+
+xscaled<-xscaled%>%na.omit()
+nrow(xscaled)
+png(paste0("AS_paper/complex_heatmap_NKs_tissues_scaled_t_all.png"), width = 9, height = 9.5, units = 'in',res=300)
+   ht = Heatmap(as.matrix(xscaled), 
+                                          bottom_annotation = ha, right_annotation = ha2,
+                                        row_names_side = "left",  row_dend_side = "right",  
+                                        name = "z-score"  ,column_split =Tissue
+) 
+draw(ht, annotation_legend_list = list(lgd_pvalue, lgd_sig))
+
+  dev.off()
+
+
+
+tissues<-paste0(unique(meta$sourcename))
+for(i in seq(from = 1  ,to = length(tissues) )){
+
+m<-meta%>%as.data.frame()%>%dplyr::filter(sourcename%in%c(tissues[i]))
+contrast<-list()
+contrast$x <- paste0(tissues[i],"_","I")
+contrast$y <- paste0(tissues[i],"_","M")
+png(paste0("AS_paper/complex_heatmap_NKs_tissues_scaled_t_all.png"), width = 9, height = 9.5, units = 'in',res=300)
+   ht = Heatmap(as.matrix(xscaled), 
+                                          bottom_annotation = ha, right_annotation = ha2,
+                                        row_names_side = "left",  row_dend_side = "right",  
+                                        name = "z-score"  ,column_split =Tissue
+) 
+draw(ht, annotation_legend_list = list(lgd_pvalue, lgd_sig))
+  dev.off()
+
+}
+
+
+```
+
+```{r NK dim versus bright magma}
+dir<-"GSE133383_NKsDimBright"
+library(data.table)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(qvalue)
+library(gplots)
+library(ggplot2)
+library(patchwork)
+library(data.table)
+library(tidyverse)
+library(ComplexHeatmap)
+#GSE133383_counts<-fread("GSE133383_filtered_NKcounts_table.gz")
+annotations <- 
+    file.path("/lab-share/IM-Gutierrez-e2/Public/References/Annotations/hsapiens", 
+              "gencode.v38.primary_assembly.annotation.gtf") %>% 
+    read_tsv(comment = "#", col_types = "c-cii-c-c",
+             col_names = c("chr", "feature", "start", "end", "strand", "info"))
+
+bed <- annotations %>%
+    filter(feature == "gene") %>%
+    mutate(tss = case_when(strand == "+" ~ start, 
+			   strand == "-" ~ end, 
+			   TRUE ~ NA_integer_)) %>%
+    mutate(gene_id = str_extract(info, "(?<=gene_id\\s\")[^\"]+"),
+	   gene_name = str_extract(info, "(?<=gene_name\\s\")[^\"]+"),
+	   gene_id = sub("^(ENSG\\d+)\\.\\d+((_PAR_Y)?)$", "\\1\\2", gene_id)) %>%
+    dplyr::select(chr, start, end, gene_id, gene_name)
+
+tpm<- fread("/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/GSE133383_NKsDimBright/tpm_counts_v38hg38.tsv")
+
+tpm_ed<- tpm%>%column_to_rownames("gene_id")
+log2tpm<-log2(tpm_ed+1)%>%rownames_to_column("V1")
+
+meta<-fread(fs::path(dir, "GSE133383_meta.txt"))%>%dplyr::select(Run,source_name,`Sample Name`,Tissue, subset, Individual , Cell_type)
+meta<- meta%>%mutate(sourcename = ifelse(source_name =="Blood","BL" ,source_name))%>%
+  mutate(sourcename = ifelse(source_name =="BM","BM" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Spleen","SP" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Lung","LU" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="LN","LN" ,sourcename))%>%
+  mutate(sourcename = ifelse(source_name =="Blood","BL" ,sourcename))%>%
+  mutate(subsets = ifelse(subset =="CD56brightCD16-","I" ,subset))%>%
+  mutate(subsets = ifelse(subset =="CD56dimCD16+","M" ,subsets))%>%
+  mutate(sampleid=paste0(Individual,"_",sourcename, "_",subsets))%>%
+  mutate(group=paste0(sourcename, "_",subsets))
+
+anno_df = data.frame(
+  foo = meta$sampleid,
+  bar =  meta$source_name
+)
+unique(meta$source_name)
+ha = HeatmapAnnotation(df = anno_df,
+                       col = list( bar = c("Blood"=1,"BM"=2  ,   "Spleen"=3, "Lung"=4,   "LN"=5 )
+                       )
+)
+
+GSE133383_counts<-merge(log2tpm,bed%>%select(gene_id, gene_name), by.x= "V1", by.y = "gene_id")
+
+GSE133383_counts<-GSE133383_counts%>%filter(gene_name%in%topgenes)%>%filter(!duplicated(gene_name))%>%select(-V1)%>%column_to_rownames("gene_name")
+nrow(GSE133383_counts)
+library(GenomicFeatures)
+
+args<-list()
+args$oDir<-"GSE133383_NKsDimBright/DEA"
+output_path<- args$oDir
+tissues<-paste0(unique(meta$sourcename))
+contrast<-list()
+contrast$x <- paste0(tissues,"_","I")
+contrast$y <- paste0(tissues,"_","M")
+
+filename<-paste0("results_",contrast$x,"_vs_",contrast$y)
+args$oFile<-filename
+
+files<-paste(output_path,"/",args$oFile,"_mixedmodel_filtered.txt", sep="")
+Name<-basename(files)%>%str_remove_all("results_|_mixedmodel_filtered.txt")
+files<-fs::path(args$oDir,paste0("Table_annotated_",Name,".txt"))
+
+res<-lapply(files, function(x){
+  Name<-basename(x)%>%str_remove_all("Table_annotated_|.txt")
+  de<-fread(x)
+  de$name<-Name
+  de
+})%>%rbindlist()
+
+#remove beta parameter 
+DEgenes<- res%>%dplyr::filter(abs(Beta)>1, fdr <= 0.05)%>%pull(gene)%>%unique()
+annotation_filtered<-bed%>%filter(gene_id %in%DEgenes)
+
+genes<-data.table::fread(fs::path("innateness_snpsea", "AS_geneticrisk.tsv"))%>%pull(Gene)%>%unique()
+genes[genes=="TLR4"]
+genes[genes=="CCL2/7/8/11"]<- "CCL2/CCL7/CCL8/CCL11"
+genes<-genes%>%str_split("/")%>%unlist()
+
+genes_f<- annotation_filtered%>%filter(gene_name%in%topgenes)%>%pull(gene_name)
+library(circlize)
+library(vridis)
+topgenes
+merged<-merge(res%>%dplyr::mutate(significance = ifelse(abs(Beta)>1 & fdr <= 0.05, TRUE,FALSE)), annotation_filtered%>%filter(gene_name%in%topgenes), by.x="gene",by.y="gene_id")
+merged_selected_cols<-merged%>%select(name, gene_name, fdr)
+
+DEgenes<-merged%>%pull(gene_name)%>%unique()
+x<-GSE133383_counts%>%rownames_to_column("ID")%>%
+pivot_longer(., -(ID), names_to = "sample_id", values_to = "exp") %>%
+mutate(sample_id = paste0 (sample_id%>%str_split_i("_",2), "_" ,sample_id%>%str_split_i("_",3))  )%>%dplyr::group_by(ID,sample_id)%>% 
+summarise(avg = mean(exp, na.rm=T)) %>%ungroup()%>% spread(sample_id, avg)%>%as.data.frame()%>%filter(ID%in%DEgenes) %>%column_to_rownames("ID")
+
+fdr_table<-merged_selected_cols%>%pivot_wider( names_from = "name",values_from="fdr",names_repair ="unique")
+fdr_table<-fdr_table[match(rownames(x),fdr_table$gene_name),]
+merged_selected_cols<-merged%>%select(name, gene_name, significance)
+significance_table<-merged_selected_cols%>%pivot_wider( names_from = "name",values_from="significance",names_repair ="unique")
+significance_table<-significance_table[match(rownames(x),significance_table$gene_name),]
+
+library(viridis)
+n_colors<-5
+color_scale <- viridis(n_colors)
+
+# Define pvalue_col_fun
+pvalue_col_fun = colorRamp2(c(0, 1,3), c( "white","grey" ,"red"))
+
+
+lgd_pvalue = Legend(title = "p-value", col_fun = pvalue_col_fun, at = c(0, 1, 2, 3), 
+    labels = c("1", "0.1", "0.01", "0.001"))
+# and one for the significant p-values
+lgd_sig = Legend(pch = "*", type = "points", labels = "< 0.05")
+
+# Create an empty list to store the annotations
+annotation_list = list()
+
+# Loop through the columns in fdr_table
+for (col_name in colnames(fdr_table)[-1]) {
+  pch = rep(NA, nrow(fdr_table))
+  pch[fdr_table[[col_name]]<0.05] = "*"
+  annotation_list[[col_name]] = anno_simple( -log10(fdr_table[[col_name]]), col = pvalue_col_fun, pch = pch,which="row")
+}
+names(annotation_list)
+# Cr
+
+ha2 = rowAnnotation(
+    BL = annotation_list$BL_I_vs_BL_M, BM = annotation_list$BM_I_vs_BM_M, 
+    LN = annotation_list$LN_I_vs_LN_M,LU = annotation_list$LU_I_vs_LU_M, SP = annotation_list$SP_I_vs_SP_M, 
+    annotation_name_side = "bottom"
+    )
+
+
+colnames(x)
+meta_ed<- meta%>%dplyr::select(Tissue,group,subset)%>%unique()
+Tissue<-meta_ed$Tissue[ match(colnames(x), meta_ed$group ) ]
+Subset<-meta_ed$subset[ match(colnames(x), meta_ed$group) ]
+Individual<-meta$Individual[ which(meta$group %in% colnames(x)) ]
+  
+  tissue_colors <- c(Blood = "red", BM = "blue", Spleen = "green", Lung = "purple", LN = "orange")
+  individual_colors <- setNames(brewer.pal(8, "Set1"), unique(Individual))
+  subset_colors <- c("CD56brightCD16-" = "cyan", "CD56dimCD16+" = "magenta")
+  
+  ha = HeatmapAnnotation(df= data.frame(tissue = Tissue,subset =Subset),
+                         col = list(
+                           tissue = c(Blood = "red", BM = "blue", Spleen = "green", Lung = "purple", LN = "orange"),
+                           subset = c("CD56brightCD16-" = "cyan", "CD56dimCD16+" = "magenta")),   annotation_name_side = "left")
+
+
+colnamesx<-colnames(x)
+xscaled<-apply(x, 1,scale)%>%t()
+colnames(xscaled)<-colnamesx
+#xscaled<-x
+
+xscaled<-xscaled%>%na.omit()
+ncol(xscaled)
+nrow(xscaled)
+png(paste0("AS_paper/complex_heatmap_NKs_tissues_scaled_t_magma.png"), width = 9, height = 12.5, units = 'in',res=300)
+   ht = Heatmap(as.matrix(xscaled), 
+                                          bottom_annotation = ha, right_annotation = ha2,
+                                        row_names_side = "left",  row_dend_side = "right",  
+                                        name = "z-score"  ,row_names_gp = grid::gpar(fontsize =7)
+) 
+draw(ht, annotation_legend_list = list(lgd_pvalue, lgd_sig))
+
+  dev.off()
+
+
+```
+
+
+```{r }
+library(future.apply)
+plan(multisession, workers = 100) ## Run in parallel on local computer
+
+init<-Sys.time()
+suppressMessages({
+    model_results<-selection_model(name=args$name,expressed=logcounts,covR=random,covF=fixed,covType=as.character(covars))
+})
+end<-Sys.time()
+print(end-init)
+
+
+init<-Sys.time()
+suppressMessages({
+    model_results2<-selection_model_future(name=args$name,expressed=logcounts,covR=random,covF=fixed,covType=as.character(covars))
+})
+end<-Sys.time()
+print(end-init)
+
+
+selection_model_future<-function(name,covType,expressed,covF=NULL,covR=NULL){
+#Defining regression variables (predictor and covariates)
+	#Predictor variable
+	x<-as.factor(meta_matrix[,name])
+	#Notation for covariates with random effect
+	if(covType=="1" || covType=="0"){
+	covRandom <- paste(paste("(1|meta_matrix$",covR,")",sep=""),collapse=" + ")
+	}
+	if(covType=="1"){
+	covs <- paste(" ", covRandom, sep="")
+	}
+	#Notation for covariates with fixed effect
+	if(covType=="-1" || covType=="0"){
+    covs<- paste(paste("meta_matrix$", covF, sep=""), collapse=" + ")
+  	}
+
+  	#Using covariates with multiple effects
+  	if(covType=="0"){
+  	covs <- paste(covs, covRandom, sep=" + ")
+  	}
+
+
+#Perform test and control regression
+	#y<- expressed[1,]
+#	meta_matrix$Individual
+ 	results <- future_apply(expressed,1,function(y,x = meta_matrix[,name]){
+ 		#Differential Model
+ 	  	form1 <- as.formula(paste("y ~ x +", covs))
+ 	  	#Control Model
+ 	  	form0 <- as.formula(paste("y ~", covs))
+ 	  	#print(form1)
+ 	  	if(covType=="-1"){
+ 	  		lm1 <- lm(form1)
+ 			lm0 <- lm(form0)
+ 	  	}else{
+ 	  	lm1 <- lmer(form1, REML=FALSE)
+ 			lm0 <- lmer(form0, REML=FALSE)
+ 	  	}
+ 		#Perform likelihood ratio test using anova function
+ 		anv <- anova(lm0, lm1)
+ 		#Output Stats
+ 		c(summary(lm1)$coefficients[2,], anv$P[2])
+ 	})           
+ 	results <- t(results)
+ 	colnames(results)<-c("x1","Std","x1_t","p_value")
+
+	if(nrow(results)!=nrow(expressed)){
+	 		print("WARNING: Input and output lines differ!")
+	}
+
+return(results) 	
+}
+
+```

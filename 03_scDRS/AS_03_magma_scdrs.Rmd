@@ -1,0 +1,331 @@
+
+
+
+```{r Packages}
+library(data.table)
+library(tidyverse)
+library(fs)
+
+```
+
+```{r Downloads}
+# Download 
+#https://figshare.com/articles/dataset/scDRS_data_release_030122/19312583?file=34300898
+#Save gs file on gs_file folder
+```
+
+```{r Functions }
+
+format_pass_to_pval<-function(file, out){
+  name<-file%>%basename()%>%str_remove(".sumstats")%>%str_remove("PASS_")
+  data<-fread(file)%>%mutate(P =  pchisq((Z)^2, df=1, lower=F))
+
+  fwrite(data,file=fs::path(out,paste0(name,".pval")),sep="\t")
+}
+``` 
+
+```{r Prepare pval files}
+##See Step 3
+files<- fs::dir_ls("/lab-share/IM-Gutierrez-e2/Public/References/LDSC-running-files/SUMSTATS/",recurse=TRUE,regexp=".sumstats")
+out<-"./magma_v1.10"
+lapply(files[5],format_pass_to_pval, out=out)
+
+``` 
+
+```{bash magma}
+# Step 1: download MAGMA software, gene location file, and reference data from
+# https://ctg.cncr.nl/software/magma after this step, one should have a folder <MAGMA_DIR>
+# with the following files:
+# 1) <MAGMA_DIR>/magma 2) <MAGMA_DIR>/g1000_eur.(bed|bim|fam) 3) <MAGMA_DIR>/NCBI37.3.gene.loc
+# Step 2: make gene annotation file for MAGMA using the following command, this only needs to be done
+# once for different GWAS summary statistics, and the file will be saved to out/step1.genes.annot
+magma_dir="./magma_v1.10"
+mkdir -p "${magma_dir}/out/step1"
+${magma_dir}/magma \
+    --annotate window=10,10 \
+    --snp-loc ${magma_dir}/g1000_eur/g1000_eur.bim \
+    --gene-loc ${magma_dir}/NCBI37.3/NCBI37.3.gene.loc \
+    --out ${magma_dir}/out/step1
+# Step 3: run MAGMA using the following command, this takes a GWAS file ${trait}.pval,
+# which at least has the columns: SNP, P, N, which corresponds to the SNP id
+# (matched to the ${magma_dir}/g1000_eur.bim), p-value, sample size. For example,
+# <trait>.pval file looks like
+# CHR     BP      SNP             P           N
+# 1       717587  rs144155419     0.453345    279949
+# 1       740284  rs61770167      0.921906    282079
+# 1       769223  rs60320384      0.059349    281744
+#
+# After this step, one should obtain a file out/step2/${trait}.gene.out, and the top genes with
+# largest Z-scores can be input to scDRS.
+
+##The use modifier can be used to specify other columns, either by name (if a header is present) or an index; 
+#it requires two values,  with the first for the SNP IDs and the second for the p-values 
+#(eg. ‘use=rsid,6’ will look for SNP IDs in the column named ‘rsid’, and for p-values in the sixth column).
+
+
+``` 
+
+
+```{r scdrs gs files}
+magma_dir="./magma_v1.10"
+traits <- fs::dir_ls(magma_dir, regexp=".pval")%>%str_subset(".gz", negate = TRUE)# %>%basename()
+
+#traits%>%str_subset("AS|ank|Arth|Alz|Hei|Lupus|IBD")
+command_func <- function(trait) {
+  command <- paste0(magma_dir, "/magma --bfile ", magma_dir, "/g1000_eur/g1000_eur --pval ", trait, " use='SNP,P' ncol='N' --gene-annot ", magma_dir, "/out/step1.genes.annot --out ", magma_dir, "/out/step2/", trait%>%basename()%>%str_remove(".pval"))
+  command
+}
+commands<-sapply(traits, command_func)
+commands
+n<-length(commands)
+shfile<-"Run_magma_traits_1.sh"
+
+add <- paste0("#!/bin/bash
+#SBATCH --job-name=run_magma_traits_1
+#SBATCH --output=run_magma_traits_1_out_%a.txt
+#SBATCH --error=run_magma_traits_1_err_%a.txt
+#SBATCH --partition=bch-compute
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=Marcos.ChinasHernandez@childrens.harvard.edu
+#SBATCH --time=02:00:00
+#SBATCH --mem=16G
+#SBATCH --ntasks=2
+#SBATCH --array=1-", n,"
+
+source /programs/biogrids.shrc
+
+commands=(
+", paste("  '", commands, "'", sep = "", collapse = "\n"), "
+)
+"
+)
+add2<-paste0('cmd=${commands[SLURM_ARRAY_TASK_ID-1]}
+echo "Running command: $cmd"
+eval $cmd
+')
+
+writeLines(c(add,add2), shfile )
+
+#######################################################################################
+# Define the function to generate the command for each trait file
+
+command_func <- function(trait) {
+  paste0("awk -v OFS=\"\\t\" '$1=$1' ", magma_dir, "/out/step2/", trait, ".genes.out > ",magma_dir,"/out/step2/", trait, "_tab.genes.out;",
+         "echo 'library(data.table);library(fs);library(tidyverse);args = commandArgs(trailingOnly=TRUE);pdir<-args[1];trait<-args[2];gene_loc_37 <- fread(fs::path(pdir,\"NCBI37.3/NCBI37.3.gene.loc\"), sep = \"\\t\");colnames(gene_loc_37) <- c(\"entrezid\", \"chr\", \"start\", \"end\",\"strand\", \"GN\");magma_score_hg19 <- fread(fs::path(pdir,paste0(\"out/step2/\",trait,\"_tab.genes.out\")), sep=\"\\t\", header = TRUE);magma_score_hg19_GN <- merge(gene_loc_37, magma_score_hg19, by.x = \"entrezid\", by.y = \"GENE\");scDRS_Input_magma <- magma_score_hg19_GN[,c(\"GN\", \"CHR\", \"START\", \"STOP\", \"NSNPS\", \"NPARAM\", \"N\", \"ZSTAT\", \"P\")];fwrite(as_tibble(scDRS_Input_magma)%>%dplyr::select(GN,'", trait,"'=ZSTAT),file = fs::path(pdir,\"gs_file\",paste0(trait,\"_\",\"scDRS_input_magma.tsv\")),sep = \"\\t\")' > ", magma_dir, "/Magma_entrez_to_symbol.R;",
+         "export R_X=4.1;Rscript ", magma_dir, "/Magma_entrez_to_symbol.R ", magma_dir, " ", trait)
+}
+traits<-traits%>%basename()%>%str_remove(".pval")
+commands <- sapply(traits, command_func)
+n <- length(commands)
+shfile <- "Run_magma_traits_2.sh"
+
+add <- paste0("#!/bin/bash
+#SBATCH --job-name=run_magma_traits_2
+#SBATCH --output=run_magma_traits_2_out_%a.txt
+#SBATCH --error=run_magma_traits_2_err_%a.txt
+#SBATCH --partition=bch-compute
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=Marcos.ChinasHernandez@childrens.harvard.edu
+#SBATCH --time=02:00:00
+#SBATCH --mem=16G
+#SBATCH --ntasks=1
+
+source /programs/biogrids.shrc
+", paste( commands, sep = "", collapse = "\n"), "
+
+")
+
+writeLines(c(add), shfile)
+#######################################################################################
+
+magma_dir="/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/magma_v1.10"
+scdrs_dir<-"/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/scdrs_analysis"
+gs_file_dir<- "gs_file_grch37"
+dir_create(fs::path(scdrs_dir,gs_file_dir))
+traits <- fs::dir_ls(magma_dir, regexp=".pval")%>%basename()%>%str_remove(".pval")%>%str_subset(".gz", negate = TRUE)
+#Convert a .tsv GWAS gene statistics file to an scDRS .gs file.
+#--zscore_file A .tsv file with first column corresponding to genes and other columns corresponding to z-scores of traits (one trait per column).
+#--weight Gene weight options. One of zscore or uniform. Default is zscore.
+#--n_max Maximum number of genes for each gene set. Default is 1000. E.g., --n-min 1000
+command_func <- function(trait) {
+  magma_input=paste0(magma_dir,"/gs_file/",trait,"_scDRS_input_magma.tsv")
+  magma_out=paste0(scdrs_dir, "/gs_file_grch37/", trait,".gs")
+  paste("singularity run docker://marcoschinas/scdrs:1.0.2 scdrs munge-gs --out-file" ,magma_out, "--zscore-file" , magma_input,  "--weight zscore --n-max 1000")
+}
+commands<-command_func(traits)
+
+add <- paste0("#!/bin/bash
+#SBATCH --job-name=run_magma_traits_3
+#SBATCH --output=run_magma_traits_3_out_%a.txt
+#SBATCH --error=run_magma_traits_3_err_%a.txt
+#SBATCH --partition=bch-compute
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=Marcos.ChinasHernandez@childrens.harvard.edu
+#SBATCH --time=01:00:00
+#SBATCH --mem=16G
+#SBATCH --ntasks=1
+
+source /programs/biogrids.shrc
+module load singularity
+
+", paste( commands, sep = "", collapse = "\n"), "
+
+")
+shfile <- "Run_magma_traits_3.sh"
+
+writeLines(c(add), shfile)
+
+``` 
+
+
+```{r Compare top genes for scdrs}
+library(dplyr)
+library(tidyverse)
+library(data.table)
+library(clusterProfiler)
+scdrs_dir<-"/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/scdrs_analysis"
+gs_file_dir<- "gs_file_AS_ErmannLab"
+create_new_gs_AS(scdrs_dir,gs_file_dir)
+fdir_out <- fs::path(fdir, "AS")
+
+create_new_gs_AS<- function(scdrs_dir,gs_file_dir){
+fdir<- fs::path(scdrs_dir,gs_file_dir)
+fdir_out <- fs::path(fdir, "AS")
+dir_create(fdir_out)
+myfiles<-c("AS_panUK.gs","AS_ImmunoChip.gs", "AS_finngen_strict.gs","AS_finngen.gs")
+files<-list.files(path=fdir,full.names = TRUE)
+#files[basename(files)%in%myfiles]%>%lapply(fread,header=TRUE,sep="\t") %>% bind_rows %>%fwrite(file = fs::path(fdir,"AS_traits.gs"),sep="\t")
+AS_genomewide<-read.table(fs::path(fdir,myfiles[1]),header = TRUE)
+AS_immunochip<-read.table(fs::path(fdir,myfiles[2]),header = TRUE)
+AS_finngen_strict<-read.table(fs::path(fdir,myfiles[3]),header = TRUE)
+AS_finngen<-read.table(fs::path(fdir,myfiles[4]),header = TRUE)
+
+gs<-fs::path(fdir,myfiles)%>%lapply(fread,header=TRUE,sep="\t") 
+gs_to_tab<-function(gs){
+  splitted<-gs$GENESET%>%strsplit(split = ",")
+  data.frame(ID=gs$TRAIT, GENE=splitted[[1]]%>%
+  str_remove("\\:.+"), Z=as.numeric(splitted[[1]]%>%str_remove(".+\\:")))
+}
+data_bind<-lapply(gs,gs_to_tab)%>%bind_rows
+split<-AS_genomewide$GENESET%>%strsplit(split = ",")
+split2<-AS_immunochip$GENESET%>%strsplit(split = ",")
+split3<-AS_finngen_strict$GENESET%>%strsplit(split = ",")
+split4<-AS_finngen$GENESET%>%strsplit(split = ",")
+
+
+gw<-data.frame(ID=split[[1]]%>%
+  str_remove("\\:.+"), gw=as.numeric(split[[1]]%>%str_remove(".+\\:")))
+im<- data.frame(ID=split2[[1]]%>%
+  str_remove("\\:.+"), im=as.numeric(split2[[1]]%>%str_remove(".+\\:"))
+)
+fgs<- data.frame(ID=split3[[1]]%>%
+  str_remove("\\:.+"), fgs=as.numeric(split3[[1]]%>%str_remove(".+\\:"))
+)
+fg<- data.frame(ID=split4[[1]]%>%
+  str_remove("\\:.+"), fg=as.numeric(split4[[1]]%>%str_remove(".+\\:")))
+
+geneset<-gs[[1]]
+topGS<-function(geneset,top=1000){
+  split<-geneset$GENESET%>%strsplit(split = ",")
+  df<-data.frame(ID=split[[1]]%>%
+  str_remove("\\:.+"), Z=as.numeric(split[[1]]%>%str_remove(".+\\:")))
+  # Extract the gene symbols
+  name<- paste0(geneset$TRAIT,"_top", top)
+  newgs_file<-data.frame(TRAIT=name,GENESET=paste0(df$ID,":",df$Z)%>%paste(collapse = ","))
+  fwrite(newgs_file,file = fs::path(fdir_out,paste0(name,".gs")),sep = "\t")
+
+}
+lapply(gs,topGS)
+lapply(gs,topGS,top=500)
+lapply(gs,topGS,top=250)
+
+merged_intersect<-merge(gw,im, all=TRUE)%>%arrange(desc(gw))
+merged_intersect2<-merge(fgs,merged_intersect,all=TRUE)%>%arrange(desc(fgs))
+merged_all<-merge(fg,merged_intersect2,all=TRUE)%>%arrange(desc(fg))
+union<-merged_all%>%mutate(score = rowSums(merged_all[,2:5], na.rm =TRUE ) , shared = rowSums(merged_all[,2:5]>1, na.rm =TRUE) )%>%arrange(desc(shared)) 
+shared<-union%>%filter(shared>=2)
+integrated<-data_bind%>%filter(GENE%in%shared$ID)%>%group_by(GENE)%>%slice_max(Z)%>%ungroup()
+data<-data.frame(TRAIT="AS_intwo",GENESET=paste0(integrated$GENE,":",integrated$Z)%>%paste(collapse = ","))
+fwrite(data,file = fs::path(fdir_out,"AS_intwo.gs"),sep = "\t")
+
+shared<-union%>%filter(shared>=3)
+integrated<-data_bind%>%filter(GENE%in%shared$ID)%>%group_by(GENE)%>%slice_max(Z)%>%ungroup()
+data<-data.frame(TRAIT="AS_inthree",GENESET=paste0(integrated$GENE,":",integrated$Z)%>%paste(collapse = ","))
+fwrite(data,file = fs::path(fdir_out,"AS_inthree.gs"),sep = "\t")
+
+merged_intersect<-merged_intersect%>%na.omit()
+data_gw<-data.frame(TRAIT="AS_gw_intersect",GENESET=paste0(merged_intersect$ID,":",merged_intersect$gw)%>%paste(collapse = ","))
+fwrite(data_gw,file = fs::path(fdir_out,"AS_gw_intersect.gs"),sep = "\t")
+data_im<-data.frame(TRAIT="AS_im_intersect",GENESET=paste0(merged_intersect$ID,":",merged_intersect$im)%>%paste(collapse = ","))
+fwrite(data_im,file = fs::path(fdir_out,"AS_im_intersect.gs"),sep = "\t")
+data<-data.frame(TRAIT="AS_intersect",GENESET=intersect(split[[1]]%>%str_remove("\\:.+"),split2[[1]]%>%str_remove("\\:.+"))%>%paste(collapse = ","))
+fwrite(data, file = fs::path(fdir_out,"AS_intersect.gs"),sep = "\t")
+data<-data.frame(TRAIT="AS_Union",GENESET=union(split[[1]]%>%str_remove("\\:.+"),split2[[1]]%>%str_remove("\\:.+"))%>%paste(collapse = ","))
+fwrite(data,file = fs::path(fdir_out,"AS_Union.gs"),sep = "\t")
+
+data<-data.frame(TRAIT="AS_Union",GENESET=union(split[[1]]%>%str_remove("\\:.+"),split2[[1]]%>%str_remove("\\:.+"))%>%paste(collapse = ","))
+fwrite(data,file = fs::path(fdir_out,"AS_Union.gs"),sep = "\t")
+}
+
+
+
+
+
+
+
+genes<-merged_intersect$ID
+GO<-enrichGO(gene = genes,keyType = "SYMBOL",ont = c("BP"),OrgDb =   org.Hs.eg.db::org.Hs.eg.db)
+barplot(GO,font.size = 12,label_format = 50)
+#barplot(addgenes(GO),font.size = 12,label_format = 50)
+addgenes<-function(enrichR,entreztogene=FALSE,padjust=0.05){
+  if(entreztogene==TRUE){
+    mylist<-enrichR@result$geneID[enrichR@result$p.adjust<padjust]%>%str_split("/")
+    symbols<-lapply(mylist, function(genes){
+      AnnotationDbi::select(org.Hs.eg.db::org.Hs.eg.db, keys=as.character(genes), columns=c("ENTREZID","SYMBOL", "GENENAME"), keytype="ENTREZID")%>%
+        na.omit()%>%pull(SYMBOL)
+    }
+    )
+    enrichR@result$geneID[enrichR@result$p.adjust<padjust]<- sapply(symbols,function(x){paste(x,collapse = ", ")})
+  }
+  enrichR@result$Description<-paste(enrichR@result$Description, enrichR@result$geneID%>%str_replace_all("/"," "))
+ 
+  enrichR
+}
+
+entrezid<-AnnotationDbi::select(org.Hs.eg.db::org.Hs.eg.db, keys=as.character(genes), columns=c("ENTREZID","SYMBOL", "GENENAME"), keytype="SYMBOL")%>%
+  dplyr::select(ENTREZID)%>%na.omit()%>%pull(ENTREZID)
+kegg<-enrichKEGG(as.numeric(entrezid),organism = "hsa",keyType  = "ncbi-geneid",pvalueCutoff = 0.05)
+barplot(kegg,label_format=50)
+
+```
+
+
+
+```{r scdrs prepare gs files commands}
+fdir='scdrs_analysis/gs_file_grch37/'
+gs_files<-fs::dir_ls(fdir)%>%str_subset("AS|Arth|Alz|Hei|IBD|UK")
+gs_files2<-fs::dir_ls(fdir)%>%str_subset("Lupus|PBC|Crohns|Ulcerative_Colitis")
+gs_files<-c(gs_files,gs_files2)
+gs<-gs_files%>%lapply(fread,header=TRUE,sep="\t") #%>% bind_rows #%>%fwrite(file = fs::path(fdir,"AS_traits.gs"),sep="\t")
+
+
+command_func <- function(gs_file) {
+  paste(gs_file%>%basename()%>%str_remove(".gs"),collapse="\t")
+}
+commands<-command_func(gs_files)
+add<-paste0("
+
+source /programs/biogrids.shrc
+
+commands=(", paste(commands,  sep = "", collapse = "\n"), ")"
+)
+writeLines(add,"traits.txt")
+
+##### 
+fdir<-"/lab-share/IM-Gutierrez-e2/Public/Marcos/Projects/AS/scdrs_analysis/gs_file_AS_ErmannLab/AS"
+gs_files<-fs::dir_ls(fdir)
+writeLines(add,"AS_traits.txt")
+
+
+```
+
