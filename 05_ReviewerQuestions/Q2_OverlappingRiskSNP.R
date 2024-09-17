@@ -74,9 +74,9 @@ genes<-magma_genes$GENESET%>%str_split(",")%>%unlist()%>%str_remove(":.+")%>%hea
 score<-magma_genes$GENESET%>%str_split(",")%>%unlist()%>%str_remove(".+:")
 magma_df<-data.frame(GENE= genes,SCORE = score)%>%rownames_to_column("rank") 
 
-NKvsAllGutCells_scRNAseq<-fread("pseudobulk/pseudo_bulk_LMM/NK_vs_Others_mixedmodel_filtered.txt")
-NKvsAllGutCells_scRNAseq_ASriskloci <- NKvsAllGutCells_scRNAseq %>% filter(gene %in% genes)
-sig_genes2<-NKvsAllGutCells_scRNAseq_ASriskloci %>% filter(gene %in% genes) %>%filter(fdr < 0.05 , x1 >1)
+NKvsImmuneGutCells_scRNAseq<-fread("pseudobulk/pseudo_bulk_LMM/NK_vs_Others_mixedmodel_filtered.txt")
+NKvsImmuneGutCells_scRNAseq_ASriskloci <- NKvsImmuneGutCells_scRNAseq %>% filter(gene %in% genes)
+sig_genes2<-NKvsImmuneGutCells_scRNAseq_ASriskloci %>% filter(gene %in% genes) %>%filter(fdr < 0.05 , x1 >1)
 
 
 library(tidyverse)
@@ -90,12 +90,12 @@ library(viridis)
 library(data.table)
 
 # x1 to
-merged_df <- merge(NKvsTcells_bulkRNAseq_ASriskloci, NKvsAllGutCells_scRNAseq_ASriskloci, by.x = "GENE_NAME", by.y = "gene", suffixes = c("_NKvsTcells_bulkRNA-seq", "_NKvsAllGutCells_scRNA-seq"), all = FALSE)
-merged_df_sig <- merged_df %>%filter(`x1_NKvsTcells_bulkRNA-seq` > 1, `x1_NKvsAllGutCells_scRNA-seq` > 1,
-                   `fdr_NKvsTcells_bulkRNA-seq` < 0.05,  `fdr_NKvsAllGutCells_scRNA-seq` < 0.05)
+merged_df <- merge(NKvsTcells_bulkRNAseq_ASriskloci, NKvsAllGutCells_scRNAseq_ASriskloci, by.x = "GENE_NAME", by.y = "gene", suffixes = c("_NKvsTcells_bulkRNA-seq", "_NKvsImmuneGutCells_scRNA-seq"), all = FALSE)
+merged_df_sig <- merged_df %>%filter(`x1_NKvsTcells_bulkRNA-seq` > 1, `x1_NKvsImmuneGutCells_scRNA-seq` > 1,
+                   `fdr_NKvsTcells_bulkRNA-seq` < 0.05,  `fdr_NKvsImmuneGutCells_scRNA-seq` < 0.05)
 colnames(merged_df_sig)
 merged_df_sig <- merged_df_sig %>%dplyr::select(Gene = GENE_NAME , `beta_NKvsTcells_bulkRNA-seq` = `x1_NKvsTcells_bulkRNA-seq` ,`Std_NKvsTcells_bulkRNA-seq`, `p_value_NKvsTcells_bulkRNA-seq`,   
- `fdr_NKvsTcells_bulkRNA-seq`, `beta_NKvsAllGutCells_scRNA-seq` = `x1_NKvsAllGutCells_scRNA-seq` , `Std_NKvsAllGutCells_scRNA-seq` ,`p_value_NKvsAllGutCells_scRNA-seq` ,`fdr_NKvsAllGutCells_scRNA-seq`   
+ `fdr_NKvsTcells_bulkRNA-seq`, `beta_NKvsImmuneGutCells_scRNA-seq` = `x1_NKvsImmuneGutCells_scRNA-seq` , `Std_NKvsImmuneGutCells_scRNA-seq` ,`p_value_NKvsImmuneGutCells_scRNA-seq` ,`fdr_NKvsImmuneGutCells_scRNA-seq`   
  )
 fwrite(merged_df_sig , "AS_Figures/Table_S2_overlaploci.tsv", sep = "\t")
 fwrite(merged_df_sig %>%arrange( desc(`beta_NKvsTcells_bulkRNA-seq`)) , "AS_Figures/supp/Table_S2_overlaploci.csv")
@@ -105,7 +105,7 @@ fwrite(merged_df_sig %>%arrange( desc(`beta_NKvsTcells_bulkRNA-seq`)) , "AS_Figu
 merged_df_sig[is.na(merged_df_sig)] <- 0
 
 # Prepare data for the heatmap
-heatmap_data <- as.matrix(merged_df_sig %>% dplyr::select( `beta_NKvsTcells_bulkRNA-seq`, `beta_NKvsAllGutCells_scRNA-seq` ))
+heatmap_data <- as.matrix(merged_df_sig %>% dplyr::select( `beta_NKvsTcells_bulkRNA-seq`, `beta_NKvsImmuneGutCells_scRNA-seq` ))
 rownames(heatmap_data) <- merged_df_sig$Gene
 library(pheatmap)
 library(viridis)
