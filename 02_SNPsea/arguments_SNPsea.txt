@@ -1,0 +1,14 @@
+# SNPsea v1.0.3
+--snps             AS_BrownWordsworth2017_extendedBiomart_gwas
+--gene-matrix      ITC_rnaseq_log2meanTPM_forSNPsea.gct
+--gene-intervals   ITC_genes_forSNPsea.bed
+--snp-intervals    TGP2011.bed.gz
+--null-snps        Lango2010.txt.gz
+--out              out_AS
+--score            single
+--slop             10000
+--threads          2
+--null-snpsets     0
+--min-observations 100
+--max-iterations   10000000
+
