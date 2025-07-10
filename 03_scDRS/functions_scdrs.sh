@@ -23,9 +23,7 @@ mkdir  "${scdrs_dir}/${project}/scdrs_results/filtfalse"
 mkdir  "${scdrs_dir}/${project}/scdrs_results/filtfalse/Downstream"
 
 }
-export SINGULARITY_CACHEDIR='/temp_work/ch229505/'
-export SINGULARITY_DOCKER_USERNAME=marcoschinas
-export SINGULARITY_DOCKER_PASSWORD='smQ)rKL?~34aEBJ'
+
 
 scdrs_default () {
 #module load singularity
